@@ -1680,34 +1680,72 @@ static char* read_file(const char* path) {
 
 static void repl(void) {
     printf("pyte 0.1 (type 'exit()' to quit)\n");
-    char inbuf[4096];
+    char inbuf[16384];
     int inpos = 0;
+    int need_more = 0;
 
     while (1) {
-        printf("> ");
+        printf(need_more ? ".  ": "> ");
         fflush(stdout);
 
-        if (!fgets(inbuf + inpos, sizeof(inbuf) - inpos, stdin)) {
+        if (!fgets(inbuf + inpos, (int)(sizeof(inbuf) - inpos), stdin)) {
             printf("\n");
             break;
         }
-        int len = strlen(inbuf + inpos);
+        int len = (int)strlen(inbuf + inpos);
         inpos += len;
 
-        /* Remove trailing newline */
-        while (inpos > 0 && (inbuf[inpos-1] == '\n' || inbuf[inpos-1] == '\r')) inpos--;
-        inbuf[inpos] = 0;
-
+        /* Quick exit check — strip trailing newline first */
+        if (inpos > 0 && inbuf[inpos-1] == '\n') inbuf[--inpos] = 0;
         if (strcmp(inbuf, "exit()") == 0) break;
+        /* Put newline back for compilation */
+        if (inbuf[inpos] == 0 && inpos < (int)sizeof(inbuf)-1) {
+            inbuf[inpos++] = '\n';
+            inbuf[inpos] = 0;
+        }
 
-        /* Skip empty lines */
-        if (inpos == 0) continue;
+        /* Count leading whitespace on the last line to track indentation */
+        int last_start = inpos - len;
+        if (last_start < 0) last_start = 0;
+        int indent = 0;
+        for (int i = last_start; i < inpos && inbuf[i] == ' '; i++) indent++;
 
-        /* Try to compile and execute (keep globals across lines) */
-        run_ext(inbuf, 1);
+        /* Check if last meaningful line ends with ':' (block start) */
+        int ends_with_colon = 0;
+        for (int i = last_start; i < inpos; i++) {
+            if (inbuf[i] == ':') {
+                int j = i + 1;
+                while (j < inpos && (inbuf[j] == ' ' || inbuf[j] == '\t')) j++;
+                if (j >= inpos || inbuf[j] == '\n' || inbuf[j] == 0) {
+                    ends_with_colon = 1;
+                    break;
+                }
+            }
+        }
 
-        inpos = 0;
-        inbuf[0] = 0;
+        if (ends_with_colon) {
+            need_more = 1;
+            continue;
+        }
+
+        /* If we needed more and got a non-indented line, execute */
+        if (need_more && indent == 0 && len > 1) {
+            need_more = 0;
+        }
+
+        if (!need_more) {
+            /* Strip trailing newline for compilation */
+            while (inpos > 0 && (inbuf[inpos-1] == '\n' || inbuf[inpos-1] == '\r')) inpos--;
+            inbuf[inpos] = 0;
+
+            if (inpos == 0) continue;
+
+            /* Compile and execute (keep globals across lines) */
+            run_ext(inbuf, 1);
+
+            inpos = 0;
+            inbuf[0] = 0;
+        }
     }
 }
 
