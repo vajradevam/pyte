@@ -38,13 +38,14 @@
  * ================================================================ */
 typedef enum {
     V_NONE, V_BOOL, V_INT, V_FLOAT, V_STR, V_LIST,
-    V_FUNC, V_BUILTIN, V_RANGE_ITER
+    V_FUNC, V_BUILTIN, V_RANGE_ITER, V_LIST_ITER
 } VType;
 
 typedef struct Value Value;
 typedef struct ListObj  { int len, cap; Value* items; } ListObj;
 typedef struct FuncObj  { int bc_start, nparams, nlocals; } FuncObj;
 typedef struct RangeIter { int start, stop, step, cur; } RangeIter;
+typedef struct ListIter { ListObj* list; int index; } ListIter;
 typedef struct StrObj { int len; char s[]; } StrObj;
 
 struct Value {
@@ -58,6 +59,7 @@ struct Value {
         FuncObj*  as_func;
         int       as_builtin_id;
         RangeIter as_range;
+        ListIter  as_list_iter;
     };
 };
 
@@ -76,6 +78,11 @@ static Value v_range_iter(int a,int b,int s) {
     v.as_range.step=s; v.as_range.cur=a;
     return v;
 }
+static Value v_list_iter(ListObj* l) {
+    Value v; v.type = V_LIST_ITER;
+    v.as_list_iter.list = l; v.as_list_iter.index = 0;
+    return v;
+}
 
 static int is_truthy(Value v) {
     switch (v.type) {
@@ -85,6 +92,7 @@ static int is_truthy(Value v) {
     case V_FLOAT: return v.as_float != 0.0;
     case V_STR:   return v.as_str->len > 0;
     case V_LIST:  return v.as_list->len > 0;
+    case V_LIST_ITER: return 1;
     default:      return 1;
     }
 }
@@ -459,7 +467,11 @@ typedef enum {
     OP_RANGE,       /* build range from top of stack: stop or start,stop */
     OP_APPEND,      /* list.append(value) */
     OP_POP_LIST,    /* list.pop() */
+    OP_UPPER,       /* str.upper() */
+    OP_LOWER,       /* str.lower() */
+    OP_STRIP,       /* str.strip() */
     OP_IN,          /* x in list/string */
+    OP_ITER,        /* convert top to iterator */
 } Opcode;
 
 /* ================================================================
@@ -873,26 +885,31 @@ static void stmt(Compiler* C) {
         next(C);
         expect(C, T_KW_IN);
 
-        /* Only range(...) is supported */
-        if (C->tok != T_KW_RANGE) { fprintf(stderr,"Error: only 'for x in range(...)' supported\n"); exit(1); }
-        next(C); expect(C, T_LPAREN);
-        if (C->tok == T_RPAREN) {
-            emit(C, OP_INT); emit64(C, 0);
-            emit(C, OP_INT); emit64(C, 0);
-            emit(C, OP_RANGE);
-        } else {
-            expr(C);
-            if (C->tok == T_COMMA) {
-                next(C); expr(C);
+        /* Handle range(...) and general iterables (lists, strings) */
+        if (C->tok == T_KW_RANGE) {
+            next(C); expect(C, T_LPAREN);
+            if (C->tok == T_RPAREN) {
+                emit(C, OP_INT); emit64(C, 0);
+                emit(C, OP_INT); emit64(C, 0);
                 emit(C, OP_RANGE);
             } else {
-                /* range(stop) → push start=0 then stop, so OP_RANGE gets (0, stop) */
-                emit(C, OP_INT); emit64(C, 0);
-                emit(C, OP_SWAP);
-                emit(C, OP_RANGE);
+                expr(C);
+                if (C->tok == T_COMMA) {
+                    next(C); expr(C);
+                    emit(C, OP_RANGE);
+                } else {
+                    /* range(stop) → push start=0 then stop, so OP_RANGE gets (0, stop) */
+                    emit(C, OP_INT); emit64(C, 0);
+                    emit(C, OP_SWAP);
+                    emit(C, OP_RANGE);
+                }
             }
+            expect(C, T_RPAREN);
+        } else {
+            /* General iterable: compile expression, then OP_ITER converts to iterator */
+            expr(C);
+            emit(C, OP_ITER);
         }
-        expect(C, T_RPAREN);
         expect(C, T_COLON);
 
         int loop_start = bcpos(C);
@@ -916,11 +933,12 @@ static void stmt(Compiler* C) {
 
         emit(C, OP_JUMP); emit16(C, loop_start);
         patch16(C, loop_start + 1); /* patch FORITER end offset */
-        emit(C, OP_POP); /* pop range iterator */
 
-        /* Patch all break jumps to exit here */
+        /* Patch all break jumps to execute the POP (clean up iterator) */
         for (int i = 0; i < C->loops[saved_depth2].n_break_patches; i++)
             patch16(C, C->loops[saved_depth2].break_patches[i]);
+
+        emit(C, OP_POP); /* pop iterator — executed by both normal exit and break */
         break;
     }
     case T_KW_DEF: {
@@ -1063,6 +1081,23 @@ static void stmt(Compiler* C) {
                 else { s = gslot(C,name); emit(C, OP_GLOAD); emit(C,s); }
                 emit(C, OP_POP_LIST);
                 emit(C, OP_POP); /* discard return value in statement context */
+            } else if (strcmp(C->lex.ident,"upper")==0 || strcmp(C->lex.ident,"lower")==0) {
+                int is_upper = strcmp(C->lex.ident,"upper")==0;
+                next(C); expect(C, T_LPAREN); expect(C, T_RPAREN);
+                int s;
+                if (C->in_func && (s = find_local(C,name)) >= 0) { emit(C, OP_LOAD); emit(C,s); }
+                else { s = gslot(C,name); emit(C, OP_GLOAD); emit(C,s); }
+                emit(C, is_upper ? OP_UPPER : OP_LOWER);
+                if (C->in_func) { emit(C, OP_STORE); emit(C,s); }
+                else { emit(C, OP_GSTORE); emit(C,s); }
+            } else if (strcmp(C->lex.ident,"strip")==0) {
+                next(C); expect(C, T_LPAREN); expect(C, T_RPAREN);
+                int s;
+                if (C->in_func && (s = find_local(C,name)) >= 0) { emit(C, OP_LOAD); emit(C,s); }
+                else { s = gslot(C,name); emit(C, OP_GLOAD); emit(C,s); }
+                emit(C, OP_STRIP);
+                if (C->in_func) { emit(C, OP_STORE); emit(C,s); }
+                else { emit(C, OP_GSTORE); emit(C,s); }
             } else {
                 fprintf(stderr,"Error: unknown method '%s'\n",C->lex.ident); exit(1);
             }
@@ -1122,6 +1157,7 @@ static void print_val(Value v) {
     case V_FUNC:  printf("<function>"); break;
     case V_BUILTIN: printf("<builtin %d>",v.as_builtin_id); break;
     case V_RANGE_ITER: printf("<range>"); break;
+    case V_LIST_ITER: printf("<list_iter>"); break;
     }
 }
 
@@ -1336,19 +1372,42 @@ static void vm_exec(int start_pc) {
             break;
         }
 
+        case OP_ITER: {
+            /* Convert top-of-stack to an iterator */
+            Value* vp = &TOP();
+            if (vp->type == V_LIST) {
+                ListObj* lst = vp->as_list;
+                *vp = v_list_iter(lst);
+            } else {
+                fprintf(stderr,"Error: not iterable\n"); longjmp(vm_err,1);
+            }
+            break;
+        }
+
         case OP_FORITER: {
             int end = RD16();
-            /* Get the range iterator from the stack, update it in place */
+            /* Get the iterator from the stack, update it in place */
             Value* itp = &TOP();
-            if (itp->type != V_RANGE_ITER) { fprintf(stderr,"Error: not iterable\n"); longjmp(vm_err,1); }
-            if (itp->as_range.step > 0 && itp->as_range.cur < itp->as_range.stop) {
-                PUSH(v_int(itp->as_range.cur));
-                itp->as_range.cur += itp->as_range.step;
-            } else if (itp->as_range.step < 0 && itp->as_range.cur > itp->as_range.stop) {
-                PUSH(v_int(itp->as_range.cur));
-                itp->as_range.cur += itp->as_range.step;
+            if (itp->type == V_RANGE_ITER) {
+                if (itp->as_range.step > 0 && itp->as_range.cur < itp->as_range.stop) {
+                    PUSH(v_int(itp->as_range.cur));
+                    itp->as_range.cur += itp->as_range.step;
+                } else if (itp->as_range.step < 0 && itp->as_range.cur > itp->as_range.stop) {
+                    PUSH(v_int(itp->as_range.cur));
+                    itp->as_range.cur += itp->as_range.step;
+                } else {
+                    pc = end;
+                }
+            } else if (itp->type == V_LIST_ITER) {
+                ListIter* li = &itp->as_list_iter;
+                if (li->index < li->list->len) {
+                    PUSH(li->list->items[li->index]);
+                    li->index++;
+                } else {
+                    pc = end;
+                }
             } else {
-                pc = end;
+                fprintf(stderr,"Error: not iterable\n"); longjmp(vm_err,1);
             }
             break;
         }
@@ -1395,7 +1454,6 @@ static void vm_exec(int start_pc) {
             if (i < 0) i += lst.as_list->len;
             if (i<0||i>=lst.as_list->len) { fprintf(stderr,"Error: list index out of range\n"); longjmp(vm_err,1); }
             lst.as_list->items[i] = val;
-            PUSH(val);
             break;
         }
 
@@ -1415,6 +1473,47 @@ static void vm_exec(int start_pc) {
             if (lst.as_list->len == 0) { fprintf(stderr,"Error: pop from empty list\n"); longjmp(vm_err,1); }
             Value ret = lst.as_list->items[--lst.as_list->len];
             PUSH(ret);
+            break;
+        }
+
+        case OP_UPPER: {
+            Value s = POP();
+            if (s.type != V_STR) { fprintf(stderr,"Error: expected string\n"); longjmp(vm_err,1); }
+            int len = s.as_str->len;
+            char* buf = (char*)alloca(len + 1);
+            for (int i = 0; i < len; i++) {
+                char c = s.as_str->s[i];
+                buf[i] = (c >= 'a' && c <= 'z') ? c - 32 : c;
+            }
+            buf[len] = 0;
+            PUSH(v_str(str_intern(buf, len)));
+            break;
+        }
+
+        case OP_LOWER: {
+            Value s = POP();
+            if (s.type != V_STR) { fprintf(stderr,"Error: expected string\n"); longjmp(vm_err,1); }
+            int len = s.as_str->len;
+            char* buf = (char*)alloca(len + 1);
+            for (int i = 0; i < len; i++) {
+                char c = s.as_str->s[i];
+                buf[i] = (c >= 'A' && c <= 'Z') ? c + 32 : c;
+            }
+            buf[len] = 0;
+            PUSH(v_str(str_intern(buf, len)));
+            break;
+        }
+
+        case OP_STRIP: {
+            Value s = POP();
+            if (s.type != V_STR) { fprintf(stderr,"Error: expected string\n"); longjmp(vm_err,1); }
+            int len = s.as_str->len;
+            const char* data = s.as_str->s;
+            int start = 0;
+            while (start < len && (data[start] == ' ' || data[start] == '\t' || data[start] == '\n' || data[start] == '\r')) start++;
+            int end = len;
+            while (end > start && (data[end-1] == ' ' || data[end-1] == '\t' || data[end-1] == '\n' || data[end-1] == '\r')) end--;
+            PUSH(v_str(str_intern(data + start, end - start)));
             break;
         }
 
@@ -1525,7 +1624,13 @@ static void vm_exec(int start_pc) {
 /* ================================================================
  * Top-level execution
  * ================================================================ */
+static void run_ext(const char* src, int keep_globals);
+
 static void run(const char* src) {
+    run_ext(src, 0);
+}
+
+static void run_ext(const char* src, int keep_globals) {
     /* Compile */
     uint8_t* bytecode = (uint8_t*)malloc(BYTECODE_MAX);
     if (!bytecode) { fprintf(stderr,"Out of memory\n"); exit(1); }
@@ -1546,10 +1651,8 @@ static void run(const char* src) {
     bc = bytecode;
     bc_len = comp.bc_len;
     sp = stack;
-    memset(globals, 0, sizeof(globals));
+    if (!keep_globals) memset(globals, 0, sizeof(globals));
     frame_count = 0;
-
-    /* execute */
 
     /* Execute */
     vm_exec(0);
@@ -1575,11 +1678,43 @@ static char* read_file(const char* path) {
     return buf;
 }
 
+static void repl(void) {
+    printf("pyte 0.1 (type 'exit()' to quit)\n");
+    char inbuf[4096];
+    int inpos = 0;
+
+    while (1) {
+        printf("> ");
+        fflush(stdout);
+
+        if (!fgets(inbuf + inpos, sizeof(inbuf) - inpos, stdin)) {
+            printf("\n");
+            break;
+        }
+        int len = strlen(inbuf + inpos);
+        inpos += len;
+
+        /* Remove trailing newline */
+        while (inpos > 0 && (inbuf[inpos-1] == '\n' || inbuf[inpos-1] == '\r')) inpos--;
+        inbuf[inpos] = 0;
+
+        if (strcmp(inbuf, "exit()") == 0) break;
+
+        /* Skip empty lines */
+        if (inpos == 0) continue;
+
+        /* Try to compile and execute (keep globals across lines) */
+        run_ext(inbuf, 1);
+
+        inpos = 0;
+        inbuf[0] = 0;
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s file.py\n", argv[0]);
-        fprintf(stderr, "       %s -e \"code\"\n", argv[0]);
-        return 1;
+        repl();
+        return 0;
     }
 
     const char* src;
