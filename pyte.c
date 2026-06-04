@@ -472,6 +472,7 @@ typedef enum {
     OP_STRIP,       /* str.strip() */
     OP_IN,          /* x in list/string */
     OP_ITER,        /* convert top to iterator */
+    OP_EXPR_RESULT, /* pop and print expression result */
 } Opcode;
 
 /* ================================================================
@@ -493,6 +494,7 @@ typedef struct {
     Lexer lex;
     int tok;
     int in_func; /* >0 when compiling function body */
+    int print_expr; /* if set, expression statements print their value */
     int line, col;
     LoopContext loops[64];
     int depth; /* current loop depth */
@@ -501,6 +503,7 @@ typedef struct {
 static void comp_init(Compiler* C, uint8_t* buf, int cap, const char* src) {
     C->bc = buf; C->bc_len = 0; C->bc_cap = cap;
     C->nglobals = 0; C->nlocals = 0; C->in_func = 0;
+    C->print_expr = 0;
     C->depth = 0;
     lex_init(&C->lex, src);
 }
@@ -1102,17 +1105,42 @@ static void stmt(Compiler* C) {
                 fprintf(stderr,"Error: unknown method '%s'\n",C->lex.ident); exit(1);
             }
         } else {
-            /* Expression as statement - discard */
-            fprintf(stderr,"Warning: expression as statement at line %d\n",C->lex.line);
+            /* Expression as statement - compile and discard/print */
+            /* The identifier is already 'consumed' from the peek, but not yet compiled.
+               Re-compile it by calling expr which will re-lex the name... 
+               Actually we need to un-consume or use the already-read name. */
+            /* We already consumed the identifier in 'name' above. We need to compile
+               a load of that identifier. */
+            if (C->in_func) { int s = find_local(C,name); if(s>=0){emit(C,OP_LOAD);emit(C,s);}else{s=gslot(C,name);emit(C,OP_GLOAD);emit(C,s);} }
+            else { int s = gslot(C,name); emit(C, OP_GLOAD); emit(C,s); }
+            if (C->print_expr) emit(C, OP_EXPR_RESULT);
+            else emit(C, OP_POP);
         }
         break;
     }
     case T_NEWLINE:
         next(C);
         break;
-    default:
-        fprintf(stderr,"Error: unexpected '%s' at line %d\n",tok_name(C->tok),C->lex.line);
-        exit(1);
+    default: {
+        /* Expression as statement */
+        /* Try to parse an expression — if the current token can start one */
+        switch (C->tok) {
+        case T_INT: case T_FLOAT: case T_STR:
+        case T_KW_TRUE: case T_KW_FALSE: case T_KW_NONE:
+        case T_IDENT:
+        case T_LPAREN: case T_LBRACKET:
+        case T_MINUS:
+        case T_KW_NOT:
+            expr(C);
+            if (C->print_expr) emit(C, OP_EXPR_RESULT);
+            else emit(C, OP_POP);
+            break;
+        default:
+            fprintf(stderr,"Error: unexpected '%s' at line %d\n",tok_name(C->tok),C->lex.line);
+            exit(1);
+        }
+        break;
+    }
     }
 }
 
@@ -1517,6 +1545,13 @@ static void vm_exec(int start_pc) {
             break;
         }
 
+        case OP_EXPR_RESULT: {
+            Value v = POP();
+            print_val(v);
+            printf("\n");
+            break;
+        }
+
         case OP_CALL: {
             int nargs = RD8();
             Value* args = sp - nargs;
@@ -1624,19 +1659,20 @@ static void vm_exec(int start_pc) {
 /* ================================================================
  * Top-level execution
  * ================================================================ */
-static void run_ext(const char* src, int keep_globals);
+static void run_ext(const char* src, int keep_globals, int print_expr);
 
 static void run(const char* src) {
-    run_ext(src, 0);
+    run_ext(src, 0, 0);
 }
 
-static void run_ext(const char* src, int keep_globals) {
+static void run_ext(const char* src, int keep_globals, int print_expr) {
     /* Compile */
     uint8_t* bytecode = (uint8_t*)malloc(BYTECODE_MAX);
     if (!bytecode) { fprintf(stderr,"Out of memory\n"); exit(1); }
 
     Compiler comp;
     comp_init(&comp, bytecode, BYTECODE_MAX, src);
+    comp.print_expr = print_expr;
     next(&comp);
 
     /* Compile top-level statements */
@@ -1728,7 +1764,12 @@ static void repl(void) {
             continue;
         }
 
-        /* If we needed more and got a non-indented line, execute */
+        /* If we needed more and got a blank line, end the block */
+        if (need_more && indent == 0 && len <= 1) {
+            need_more = 0;
+        }
+
+        /* If we needed more and got a non-indented line, execute pending block */
         if (need_more && indent == 0 && len > 1) {
             need_more = 0;
         }
@@ -1741,7 +1782,7 @@ static void repl(void) {
             if (inpos == 0) continue;
 
             /* Compile and execute (keep globals across lines) */
-            run_ext(inbuf, 1);
+            run_ext(inbuf, 1, 1);
 
             inpos = 0;
             inbuf[0] = 0;
