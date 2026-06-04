@@ -29,7 +29,7 @@ if [ $# -ge 1 ]; then
         fi
     done
 else
-    TESTS="$TDIR/t00_basic.py $TDIR/t01_strings.py $TDIR/t02_control.py $TDIR/t03_functions.py $TDIR/t04_lists.py $TDIR/t05_booleans.py $TDIR/t06_truthiness.py $TDIR/t07_integration.py $TDIR/t08_comments.py $TDIR/t10_edge.py"
+    TESTS="$TDIR/t00_basic.py $TDIR/t01_strings.py $TDIR/t02_control.py $TDIR/t03_functions.py $TDIR/t04_lists.py $TDIR/t05_booleans.py $TDIR/t06_truthiness.py $TDIR/t07_integration.py $TDIR/t08_comments.py $TDIR/t09_forlist.py $TDIR/t10_edge.py $TDIR/t11_string_methods.py"
 fi
 
 all_pass=1

@@ -31,7 +31,7 @@ make test    # run all tests
 ## Not supported (intentionally)
 
 - Classes, exceptions, generators, modules, imports
-- `for x in list` (only `for x in range(...)`)
+- String methods (`.upper()`, etc.)
 - String methods (`.upper()`, etc.) beyond `.pop()` for lists
 - Slice notation `[1:3]`
 - `while`/`else`, `for`/`else`
