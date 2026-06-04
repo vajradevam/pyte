@@ -42,8 +42,8 @@ make test    # run all tests
 
 | Build | Flags | Binary |
 |---|---|---|
-| `make compile` | `-O2 -s` | ~44K |
-| `make size` | `-Os -Wl,--gc-sections` | ~27K |
+| `make compile` | `-O2 -s` | 43K |
+| `make size` | `-Os -Wl,--gc-sections` | 27K |
 
 ## Files
 
