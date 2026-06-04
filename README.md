@@ -1,4 +1,4 @@
-# pyte: Tiny Python interpreter
+# Tiny Python interpreter
 
 A minimal Python bytecode interpreter in ~1600 lines of C. Single pass compiler, small VM, no malloc per operation, no external deps.
 
