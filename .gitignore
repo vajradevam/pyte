@@ -1,0 +1,7 @@
+pyte
+pyte-dbg
+pyte-tiny
+pyte_asan
+*.o
+*.swp
+*~
