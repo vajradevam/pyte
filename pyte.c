@@ -19,6 +19,10 @@
 #include <ctype.h>
 #include <setjmp.h>
 
+/* Error recovery for REPL */
+static jmp_buf comp_jmp;
+static int use_comp_jmp = 0;
+
 /* ================================================================
  * Configuration
  * ================================================================ */
@@ -105,7 +109,7 @@ static int  str_arena_pos;
 
 static StrObj* str_alloc(int len) {
     int n = sizeof(StrObj) + len + 1;
-    if (str_arena_pos + n > STRING_POOL_MAX) { fprintf(stderr,"Error: string pool full\n"); exit(1); }
+    if (str_arena_pos + n > STRING_POOL_MAX) { fprintf(stderr,"Error: string pool full\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
     StrObj* s = (StrObj*)(str_arena + str_arena_pos);
     str_arena_pos += n;
     s->len = len;
@@ -132,7 +136,7 @@ static char list_arena[LIST_ARENA_MAX];
 static int  list_arena_pos;
 
 static void* lalloc(int sz) {
-    if (list_arena_pos + sz > LIST_ARENA_MAX) { fprintf(stderr,"Error: list arena full\n"); exit(1); }
+    if (list_arena_pos + sz > LIST_ARENA_MAX) { fprintf(stderr,"Error: list arena full\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
     void* p = list_arena + list_arena_pos;
     list_arena_pos += sz;
     return p;
@@ -264,7 +268,7 @@ static int lex_skip_ws(Lexer* L, int* at_line_start) {
     while (1) {
         int c = lex_peek(L);
         if (c == ' ') { lex_adv(L); if (*at_line_start) indent++; continue; }
-        if (c == '\t') { fprintf(stderr,"Error: tabs not supported line %d\n",L->line); exit(1); }
+        if (c == '\t') { fprintf(stderr,"Error: tabs not supported line %d\n",L->line); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         if (c == '#') { while (lex_peek(L) && lex_peek(L) != '\n') lex_adv(L); continue; }
         if (c == '\n') {
             lex_adv(L);
@@ -307,7 +311,7 @@ static int lex_next(Lexer* L) {
             return T_DEDENT;
         }
         if (indent != L->indent_stack[L->indent_top]) {
-            fprintf(stderr,"Error: inconsistent indent at line %d\n",L->line); exit(1);
+            fprintf(stderr,"Error: inconsistent indent at line %d\n",L->line); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
         }
         L->prev_indent = indent;
         /* Same level: leading whitespace already consumed, continue to tokens */
@@ -344,10 +348,10 @@ static int lex_next(Lexer* L) {
             if (lex_peek(L) == '\\') { lex_adv(L); if (!lex_peek(L)) break; }
             lex_adv(L);
         }
-        if (!lex_peek(L)) { fprintf(stderr,"Error: unterminated string line %d\n",L->line); exit(1); }
+        if (!lex_peek(L)) { fprintf(stderr,"Error: unterminated string line %d\n",L->line); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         int len = L->pos - start;
         char buf[1024];
-        if (len >= 1023) { fprintf(stderr,"Error: string too long\n"); exit(1); }
+        if (len >= 1023) { fprintf(stderr,"Error: string too long\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         memcpy(buf, L->src + start, len); buf[len] = 0;
         lex_adv(L); /* skip closing quote */
         /* Simple unescape */
@@ -390,7 +394,7 @@ static int lex_next(Lexer* L) {
         int start = L->pos;
         while (isalnum(lex_peek(L)) || lex_peek(L) == '_') lex_adv(L);
         int len = L->pos - start;
-        if (len >= IDENT_MAX-1) { fprintf(stderr,"Error: identifier too long\n"); exit(1); }
+        if (len >= IDENT_MAX-1) { fprintf(stderr,"Error: identifier too long\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         memcpy(L->ident, L->src + start, len); L->ident[len] = 0;
 
         struct { const char* w; int t; } kw[] = {
@@ -434,7 +438,7 @@ static int lex_next(Lexer* L) {
     case '.': lex_adv(L); return T_DOT;
     }
     fprintf(stderr,"Error: unexpected char '%c'(%d) at line %d\n",c,c,L->line);
-    exit(1);
+    if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
     return T_EOF;
 }
 
@@ -509,7 +513,7 @@ static void comp_init(Compiler* C, uint8_t* buf, int cap, const char* src) {
 }
 
 static void emit(Compiler* C, int b) {
-    if (C->bc_len >= C->bc_cap) { fprintf(stderr,"Error: bytecode overflow\n"); exit(1); }
+    if (C->bc_len >= C->bc_cap) { fprintf(stderr,"Error: bytecode overflow\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
     C->bc[C->bc_len++] = b;
 }
 static void emit64(Compiler* C, int64_t v) {
@@ -534,7 +538,7 @@ static void next(Compiler* C) {
 static void expect(Compiler* C, int t) {
     if (C->tok != t) {
         fprintf(stderr,"Error: expected '%s' got '%s' at line %d\n",tok_name(t),tok_name(C->tok),C->lex.line);
-        exit(1);
+        if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
     }
     next(C);
 }
@@ -675,7 +679,7 @@ static void primary(Compiler* C) {
     default:
         fprintf(stderr,"Error: unexpected token '%s' in expression at line %d\n",
                 tok_name(C->tok), C->lex.line);
-        exit(1);
+        if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
     }
 
     /* Postfix operations: subscript [...] */
@@ -724,7 +728,7 @@ static void expr_bp(Compiler* C, int minp) {
                 emit(C, OP_NOT);
                 continue;
             } else {
-                fprintf(stderr,"Error: 'not' must be followed by 'in' in this context\n"); exit(1);
+                fprintf(stderr,"Error: 'not' must be followed by 'in' in this context\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
             }
         }
 
@@ -883,7 +887,7 @@ static void stmt(Compiler* C) {
     case T_KW_FOR: {
         /* for var in range(...): */
         next(C);
-        if (C->tok != T_IDENT) { fprintf(stderr,"Error: expected identifier after 'for'\n"); exit(1); }
+        if (C->tok != T_IDENT) { fprintf(stderr,"Error: expected identifier after 'for'\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         char vname[IDENT_MAX]; strcpy(vname, C->lex.ident);
         next(C);
         expect(C, T_KW_IN);
@@ -947,7 +951,7 @@ static void stmt(Compiler* C) {
     case T_KW_DEF: {
         /* def name(params): body */
         next(C);
-        if (C->tok != T_IDENT) { fprintf(stderr,"Error: expected function name\n"); exit(1); }
+        if (C->tok != T_IDENT) { fprintf(stderr,"Error: expected function name\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         char fname[IDENT_MAX]; strcpy(fname, C->lex.ident);
         int slot = gslot(C, fname);
         next(C); expect(C, T_LPAREN);
@@ -957,7 +961,7 @@ static void stmt(Compiler* C) {
         int nparams = 0;
         if (C->tok != T_RPAREN) {
             while (1) {
-                if (C->tok != T_IDENT) { fprintf(stderr,"Error: expected parameter name\n"); exit(1); }
+                if (C->tok != T_IDENT) { fprintf(stderr,"Error: expected parameter name\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
                 strcpy(params[nparams++], C->lex.ident);
                 next(C);
                 if (C->tok != T_COMMA) break;
@@ -1010,7 +1014,7 @@ static void stmt(Compiler* C) {
     }
     case T_KW_BREAK: {
         next(C);
-        if (C->depth == 0) { fprintf(stderr,"Error: break outside loop\n"); exit(1); }
+        if (C->depth == 0) { fprintf(stderr,"Error: break outside loop\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         int p = bcpos(C);
         emit(C, OP_JUMP); emit16(C, 0);
         LoopContext* lc = &C->loops[C->depth - 1];
@@ -1019,7 +1023,7 @@ static void stmt(Compiler* C) {
     }
     case T_KW_CONTINUE: {
         next(C);
-        if (C->depth == 0) { fprintf(stderr,"Error: continue outside loop\n"); exit(1); }
+        if (C->depth == 0) { fprintf(stderr,"Error: continue outside loop\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         emit(C, OP_JUMP); emit16(C, C->loops[C->depth - 1].continue_target);
         break;
     }
@@ -1102,7 +1106,7 @@ static void stmt(Compiler* C) {
                 if (C->in_func) { emit(C, OP_STORE); emit(C,s); }
                 else { emit(C, OP_GSTORE); emit(C,s); }
             } else {
-                fprintf(stderr,"Error: unknown method '%s'\n",C->lex.ident); exit(1);
+                fprintf(stderr,"Error: unknown method '%s'\n",C->lex.ident); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
             }
         } else {
             /* Expression as statement - compile and discard/print */
@@ -1115,6 +1119,11 @@ static void stmt(Compiler* C) {
             else { int s = gslot(C,name); emit(C, OP_GLOAD); emit(C,s); }
             if (C->print_expr) emit(C, OP_EXPR_RESULT);
             else emit(C, OP_POP);
+            /* Expression must be followed by newline/EOF */
+            if (C->tok != T_NEWLINE && C->tok != T_DEDENT && C->tok != T_EOF) {
+                fprintf(stderr,"Error: expected newline after statement at line %d\n",C->lex.line);
+                if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
+            }
         }
         break;
     }
@@ -1128,16 +1137,22 @@ static void stmt(Compiler* C) {
         case T_INT: case T_FLOAT: case T_STR:
         case T_KW_TRUE: case T_KW_FALSE: case T_KW_NONE:
         case T_IDENT:
+        case T_KW_LEN: case T_KW_PRINT: case T_KW_RANGE:
         case T_LPAREN: case T_LBRACKET:
         case T_MINUS:
         case T_KW_NOT:
             expr(C);
             if (C->print_expr) emit(C, OP_EXPR_RESULT);
             else emit(C, OP_POP);
+            /* Expression must be followed by newline/EOF */
+            if (C->tok != T_NEWLINE && C->tok != T_DEDENT && C->tok != T_EOF) {
+                fprintf(stderr,"Error: expected newline after statement at line %d\n",C->lex.line);
+                if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
+            }
             break;
         default:
             fprintf(stderr,"Error: unexpected '%s' at line %d\n",tok_name(C->tok),C->lex.line);
-            exit(1);
+            if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
         }
         break;
     }
@@ -1641,7 +1656,7 @@ static void vm_exec(int start_pc) {
             int nparams = RD8();
             int nloc = RD8();
             FuncObj* f = (FuncObj*)malloc(sizeof(FuncObj));
-            if (!f) { fprintf(stderr,"Out of memory\n"); exit(1); }
+            if (!f) { fprintf(stderr,"Out of memory\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
             f->bc_start = body;
             f->nparams = nparams;
             f->nlocals = nloc;
@@ -1668,7 +1683,7 @@ static void run(const char* src) {
 static void run_ext(const char* src, int keep_globals, int print_expr) {
     /* Compile */
     uint8_t* bytecode = (uint8_t*)malloc(BYTECODE_MAX);
-    if (!bytecode) { fprintf(stderr,"Out of memory\n"); exit(1); }
+    if (!bytecode) { fprintf(stderr,"Out of memory\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
 
     Compiler comp;
     comp_init(&comp, bytecode, BYTECODE_MAX, src);
@@ -1719,6 +1734,8 @@ static void repl(void) {
     char inbuf[16384];
     int inpos = 0;
     int need_more = 0;
+
+    use_comp_jmp = 1;
 
     while (1) {
         printf(need_more ? ".  ": "> ");
@@ -1782,7 +1799,12 @@ static void repl(void) {
             if (inpos == 0) continue;
 
             /* Compile and execute (keep globals across lines) */
-            run_ext(inbuf, 1, 1);
+            if (setjmp(comp_jmp)) {
+                /* Compilation or runtime error — print newline and continue */
+                fprintf(stderr, "\n");
+            } else {
+                run_ext(inbuf, 1, 1);
+            }
 
             inpos = 0;
             inbuf[0] = 0;

@@ -5,7 +5,10 @@
 - [x] **Fix `OP_SET` stack bug** — was pushing value back, corrupting stack in loops
 - [x] **Fix nested for-break** — break now pops iterator before exiting
 - [x] **String methods** — `.upper()`, `.lower()`, `.strip()`
-- [ ] **REPL** — interactive mode when no file/-e given
+- [x] **REPL** — interactive mode with multi-line block support
+- [x] **Improve REPL** — expression result printing, multi-line handling
+- [ ] **REPL error recovery** — don't exit on compilation errors
+- [ ] **REPL command history**
 
 ## Code quality
 - [ ] **Split into multiple files** — `lexer.c`, `compile.c`, `vm.c`, `main.c`, `pyte.h`
