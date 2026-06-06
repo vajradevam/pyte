@@ -1,6 +1,7 @@
 pyte
 pyte-dbg
 pyte-tiny
+pyte-tiny-nolibc
 pyte_asan
 *.o
 *.swp
