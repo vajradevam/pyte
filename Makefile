@@ -8,7 +8,7 @@ TESTS_DIR = tests
 
 .PHONY: all compile debug size tiny-nolibc run test test-one clean summary
 
-all: compile
+all: compile size tiny-nolibc
 
 # ── Build (balanced, with libc) ──
 compile: $(TARGET)
@@ -98,6 +98,7 @@ summary:
 	@echo "  tests:      $$(ls $(TESTS_DIR)/t*.py 2>/dev/null | wc -l) files"
 	@echo ""
 	@echo "targets:"
+	@echo "  make all           — build all 3 targets"
 	@echo "  make               — build $(TARGET) (-O2 -s)"
 	@echo "  make compile       — build $(TARGET)"
 	@echo "  make debug         — build with -O0 -g -DDEBUG"
