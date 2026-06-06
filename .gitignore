@@ -4,5 +4,6 @@ pyte-tiny
 pyte-tiny-nolibc
 pyte_asan
 *.o
+*.tmp
 *.swp
 *~
