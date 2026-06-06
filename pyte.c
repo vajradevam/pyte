@@ -917,11 +917,13 @@ static void stmt(Compiler* C) {
 
         emit(C, OP_JUMP); emit16(C, loop_start);
         patch16(C, loop_start + 1); /* patch FORITER end offset */
-        emit(C, OP_POP); /* pop range iterator */
 
-        /* Patch all break jumps to exit here */
+        /* Patch all break jumps to exit here (before OP_POP so the
+           range iterator gets cleaned up) */
         for (int i = 0; i < C->loops[saved_depth2].n_break_patches; i++)
             patch16(C, C->loops[saved_depth2].break_patches[i]);
+
+        emit(C, OP_POP); /* pop range iterator */
         break;
     }
     case T_KW_DEF: {
