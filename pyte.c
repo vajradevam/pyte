@@ -13,14 +13,24 @@
  */
 
 #include <stdlib.h>
-#include <string.h>
 #include <stdint.h>
 
 #include <unistd.h>
 #include <fcntl.h>
 
-static void pstr(const char* s) { write(1, s, strlen(s)); }
-static void perr(const char* s) { write(2, s, strlen(s)); }
+static int xstrlen(const char* s) { int n=0; while(s[n]) n++; return n; }
+static int xstrcmp(const char* a, const char* b) { while(*a&&*a==*b){a++;b++;} return *(unsigned char*)a-*(unsigned char*)b; }
+static char* xstrcpy(char* d, const char* s) { char* r=d; while((*d++=*s++)); return r; }
+static void xmemcpy(void* d, const void* s, int n) { unsigned char* a=d; const unsigned char* b=s; while(n--) *a++=*b++; }
+static int xmemcmp(const void* a, const void* b, int n) { const unsigned char* x=a,*y=b; while(n--){if(*x!=*y)return *x-*y;x++;y++;} return 0; }
+static void xmemset(void* d, int c, int n) { unsigned char* a=d; while(n--) *a++=c; }
+
+
+
+
+
+static void pstr(const char* s) { int n=0; while(s[n]) n++; write(1,s,n); }
+static void perr(const char* s) { int n=0; while(s[n]) n++; write(2,s,n); }
 static void perr_int(long long n) {
     char buf[32], *p = buf + sizeof(buf);
     unsigned long long u;
@@ -122,11 +132,11 @@ static StrObj* str_intern(const char* data, int len) {
     int pos = 0;
     while (pos < str_arena_pos) {
         StrObj* s = (StrObj*)(str_arena + pos);
-        if (s->len == len && memcmp(s->s, data, len) == 0) return s;
+        if (s->len == len && xmemcmp(s->s, data, len) == 0) return s;
         pos += sizeof(StrObj) + s->len + 1;
     }
     StrObj* s = str_alloc(len);
-    memcpy(s->s, data, len);
+    xmemcpy(s->s, data, len);
     return s;
 }
 
@@ -153,7 +163,7 @@ static void list_ensure(ListObj* l, int n) {
     if (n <= l->cap) return;
     int nc = n < 8 ? 8 : n;
     Value* ni = (Value*)lalloc(nc * sizeof(Value));
-    if (l->items && l->len) memcpy(ni, l->items, l->len * sizeof(Value));
+    if (l->items && l->len) xmemcpy(ni, l->items, l->len * sizeof(Value));
     l->items = ni; l->cap = nc;
 }
 
@@ -302,7 +312,7 @@ static int lex_next(Lexer* L) {
         int len = L->pos - start;
         char buf[1024];
         if (len >= 1023) { perr("strlong\n"); _exit(1); }
-        memcpy(buf, L->src + start, len); buf[len] = 0;
+        xmemcpy(buf, L->src + start, len); buf[len] = 0;
         lex_adv(L); /* skip closing quote */
         /* Simple unescape */
         char out[1024]; int o = 0;
@@ -345,7 +355,7 @@ static int lex_next(Lexer* L) {
         while (((lex_peek(L)>='a'&&lex_peek(L)<='z')||(lex_peek(L)>='A'&&lex_peek(L)<='Z')||(lex_peek(L)>='0'&&lex_peek(L)<='9')||lex_peek(L)=='_') || lex_peek(L) == '_') lex_adv(L);
         int len = L->pos - start;
         if (len >= IDENT_MAX-1) { perr("idlong\n"); _exit(1); }
-        memcpy(L->ident, L->src + start, len); L->ident[len] = 0;
+        xmemcpy(L->ident, L->src + start, len); L->ident[len] = 0;
 
         struct { const char* w; int t; } kw[] = {
             {"and",T_KW_AND},{"or",T_KW_OR},{"not",T_KW_NOT},
@@ -358,7 +368,7 @@ static int lex_next(Lexer* L) {
             {NULL,0}
         };
         for (int i = 0; kw[i].w; i++)
-            if (strcmp(L->ident, kw[i].w) == 0) return kw[i].t;
+            if (xstrcmp(L->ident, kw[i].w) == 0) return kw[i].t;
         return T_IDENT;
     }
 
@@ -463,7 +473,7 @@ static void emit64(Compiler* C, int64_t v) {
     for (int i = 0; i < 8; i++) emit(C, (v>>(i*8))&0xFF);
 }
 static void emit64d(Compiler* C, double v) {
-    uint64_t b; memcpy(&b, &v, 8);
+    uint64_t b; xmemcpy(&b, &v, 8);
     for (int i = 0; i < 8; i++) emit(C, (b>>(i*8))&0xFF);
 }
 static void emit16(Compiler* C, int v) {
@@ -489,23 +499,23 @@ static void expect(Compiler* C, int t) {
 /* Symbol table helpers */
 static int gslot(Compiler* C, const char* name) {
     for (int i = 0; i < C->nglobals; i++)
-        if (strcmp(C->globals[i].name, name)==0) return i;
+        if (xstrcmp(C->globals[i].name, name)==0) return i;
     int s = C->nglobals++;
-    size_t sl = strlen(name); if (sl>31) sl=31;
-    memcpy(C->globals[s].name, name, sl); C->globals[s].name[sl]=0;
+    size_t sl = xstrlen(name); if (sl>31) sl=31;
+    xmemcpy(C->globals[s].name, name, sl); C->globals[s].name[sl]=0;
     return s;
 }
 static int lslot(Compiler* C, const char* name) {
     for (int i = 0; i < C->nlocals; i++)
-        if (strcmp(C->locals[i].name, name)==0) return i;
+        if (xstrcmp(C->locals[i].name, name)==0) return i;
     int s = C->nlocals++;
-    size_t sl = strlen(name); if (sl>31) sl=31;
-    memcpy(C->locals[s].name, name, sl); C->locals[s].name[sl]=0;
+    size_t sl = xstrlen(name); if (sl>31) sl=31;
+    xmemcpy(C->locals[s].name, name, sl); C->locals[s].name[sl]=0;
     return s;
 }
 static int find_local(Compiler* C, const char* name) {
     for (int i = 0; i < C->nlocals; i++)
-        if (strcmp(C->locals[i].name, name)==0) return i;
+        if (xstrcmp(C->locals[i].name, name)==0) return i;
     return -1;
 }
 
@@ -563,22 +573,22 @@ static void primary(Compiler* C) {
     case T_KW_RANGE:
     case T_KW_PRINT: {
         char name[IDENT_MAX];
-        strcpy(name, C->lex.ident);
+        xstrcpy(name, C->lex.ident);
         next(C);
 
         /* Check for call: name(...) */
         if (C->tok == T_LPAREN) {
             /* Determine if it's a known builtin we handle specially */
-            if (strcmp(name,"print")==0) {
+            if (xstrcmp(name,"print")==0) {
                 next(C);
                 int n = 0;
                 if (C->tok != T_RPAREN) { expr(C); n++; while (C->tok==T_COMMA) { next(C); expr(C); n++; } }
                 expect(C, T_RPAREN);
                 emit(C, OP_PRINT); emit(C, n);
-            } else if (strcmp(name,"len")==0) {
+            } else if (xstrcmp(name,"len")==0) {
                 next(C); expr(C); expect(C, T_RPAREN);
                 emit(C, OP_LEN);
-            } else if (strcmp(name,"range")==0) {
+            } else if (xstrcmp(name,"range")==0) {
                 next(C);
                 if (C->tok == T_RPAREN) {
                     /* range() — empty range, not useful but supported */
@@ -830,7 +840,7 @@ static void stmt(Compiler* C) {
         /* for var in range(...): */
         next(C);
         if (C->tok != T_IDENT) { perr("forid\n"); _exit(1); }
-        char vname[IDENT_MAX]; strcpy(vname, C->lex.ident);
+        char vname[IDENT_MAX]; xstrcpy(vname, C->lex.ident);
         next(C);
         expect(C, T_KW_IN);
 
@@ -888,7 +898,7 @@ static void stmt(Compiler* C) {
         /* def name(params): body */
         next(C);
         if (C->tok != T_IDENT) { perr("fnname\n"); _exit(1); }
-        char fname[IDENT_MAX]; strcpy(fname, C->lex.ident);
+        char fname[IDENT_MAX]; xstrcpy(fname, C->lex.ident);
         int slot = gslot(C, fname);
         next(C); expect(C, T_LPAREN);
 
@@ -898,7 +908,7 @@ static void stmt(Compiler* C) {
         if (C->tok != T_RPAREN) {
             while (1) {
                 if (C->tok != T_IDENT) { perr("param\n"); _exit(1); }
-                strcpy(params[nparams++], C->lex.ident);
+                xstrcpy(params[nparams++], C->lex.ident);
                 next(C);
                 if (C->tok != T_COMMA) break;
                 next(C);
@@ -964,7 +974,7 @@ static void stmt(Compiler* C) {
         break;
     }
     case T_IDENT: {
-        char name[IDENT_MAX]; strcpy(name, C->lex.ident);
+        char name[IDENT_MAX]; xstrcpy(name, C->lex.ident);
         next(C);
 
         if (C->tok == T_EQ) {
@@ -982,7 +992,7 @@ static void stmt(Compiler* C) {
             emit(C, OP_SET);
         } else if (C->tok == T_LPAREN) {
             /* Call as statement */
-            if (strcmp(name,"print")==0) {
+            if (xstrcmp(name,"print")==0) {
                 next(C);
                 int n = 0;
                 if (C->tok != T_RPAREN) { expr(C); n++; while (C->tok==T_COMMA) { next(C); expr(C); n++; } }
@@ -1002,7 +1012,7 @@ static void stmt(Compiler* C) {
         } else if (C->tok == T_DOT) {
             /* x.append(y) or x.pop() */
             next(C);
-            if (strcmp(C->lex.ident,"append")==0) {
+            if (xstrcmp(C->lex.ident,"append")==0) {
                 next(C); expect(C, T_LPAREN); expr(C); expect(C, T_RPAREN);
                 int s;
                 if (C->in_func && (s = find_local(C,name)) >= 0) { emit(C, OP_LOAD); emit(C,s); }
@@ -1017,7 +1027,7 @@ static void stmt(Compiler* C) {
                    But for 'append as statement', we just want to discard result. */
                 emit(C, OP_APPEND);
                 emit(C, OP_POP);
-            } else if (strcmp(C->lex.ident,"pop")==0) {
+            } else if (xstrcmp(C->lex.ident,"pop")==0) {
                 next(C); expect(C, T_LPAREN); expect(C, T_RPAREN);
                 int s;
                 if (C->in_func && (s = find_local(C,name)) >= 0) { emit(C, OP_LOAD); emit(C,s); }
@@ -1123,8 +1133,8 @@ static Value add_val(Value a, Value b) {
     if (a.type==V_STR && b.type==V_STR) {
         int l = a.as_str->len + b.as_str->len;
         char buf[4096]; if (l>=4095) { perr("strlong\n"); vm_err_flag = 1; return v_none(); }
-        memcpy(buf,a.as_str->s,a.as_str->len);
-        memcpy(buf+a.as_str->len,b.as_str->s,b.as_str->len);
+        xmemcpy(buf,a.as_str->s,a.as_str->len);
+        xmemcpy(buf+a.as_str->len,b.as_str->s,b.as_str->len);
         return v_str(str_intern(buf,l));
     }
     perr("bad+\n"); vm_err_flag = 1; return v_none();
@@ -1195,7 +1205,7 @@ static Value cmp_val(int op, Value a, Value b) {
         double va=a.as_float,vb=b.as_int;
         switch(op){case OP_LT:r=va<vb;break;case OP_GT:r=va>vb;break;case OP_EQ:r=va==vb;break;case OP_NE:r=va!=vb;break;case OP_LE:r=va<=vb;break;case OP_GE:r=va>=vb;break;}
     } else if (a.type==V_STR && b.type==V_STR) {
-        int c = strcmp(a.as_str->s, b.as_str->s);
+        int c = xstrcmp(a.as_str->s, b.as_str->s);
         switch(op){case OP_LT:r=c<0;break;case OP_GT:r=c>0;break;case OP_EQ:r=c==0;break;case OP_NE:r=c!=0;break;case OP_LE:r=c<=0;break;case OP_GE:r=c>=0;break;}
     } else if (a.type==V_BOOL && b.type==V_BOOL) {
         switch(op){case OP_EQ:r=a.as_bool==b.as_bool;break;case OP_NE:r=a.as_bool!=b.as_bool;break;default:goto unsup_cmp;}
@@ -1222,14 +1232,14 @@ static void vm_exec(int start_pc) {
     int pc = start_pc;
     volatile int nlocals = 0;
     Value locals[LOCALS_MAX];
-    memset(locals,0,sizeof(locals));
+    xmemset(locals,0,sizeof(locals));
 
     
 
 #define RD8()  (bc[pc++])
 #define RD16() ({ int v = bc[pc] | (bc[pc+1]<<8); pc+=2; v; })
 #define RD64() ({ int64_t v=0; for(int i=0;i<8;i++) v|=(int64_t)bc[pc++]<<(i*8); v; })
-#define RD64F() ({ uint64_t b=0; for(int i=0;i<8;i++) b|=(uint64_t)bc[pc++]<<(i*8); double d; memcpy(&d,&b,8); d; })
+#define RD64F() ({ uint64_t b=0; for(int i=0;i<8;i++) b|=(uint64_t)bc[pc++]<<(i*8); double d; xmemcpy(&d,&b,8); d; })
 #define PUSH(v) (*sp++ = (v))
 #define POP()   (*--sp)
 #define TOP()   (sp[-1])
@@ -1344,7 +1354,7 @@ static void vm_exec(int start_pc) {
             list_ensure(l, n);
             l->len = n;
             Value* items = sp - n;
-            memcpy(l->items, items, n * sizeof(Value));
+            xmemcpy(l->items, items, n * sizeof(Value));
             sp -= n;
             PUSH(v_list(l));
             break;
@@ -1421,11 +1431,11 @@ static void vm_exec(int start_pc) {
                 fr->pc = pc;
                 fr->sp = sp;         /* save BEFORE adjusting sp */
                 fr->nargs = nargs;
-                memcpy(fr->locals, locals, sizeof(Value)*nlocals);
+                xmemcpy(fr->locals, locals, sizeof(Value)*nlocals);
                 fr->nlocals = nlocals;
 
                 /* Set up new frame */
-                memset(locals, 0, sizeof(locals));
+                xmemset(locals, 0, sizeof(locals));
                 for (int i = 0; i < n; i++) locals[i] = args[i];
                 nlocals = f->nlocals;
 
@@ -1482,7 +1492,7 @@ static void vm_exec(int start_pc) {
             sp = fr->sp - fr->nargs - 1;
             *sp = ret;   /* write retval where the callee was */
             sp += 1;     /* advance past retval */
-            memcpy(locals, fr->locals, sizeof(Value)*fr->nlocals);
+            xmemcpy(locals, fr->locals, sizeof(Value)*fr->nlocals);
             nlocals = fr->nlocals;
             break;
         }
@@ -1536,7 +1546,7 @@ static void run(const char* src) {
     bc = bytecode;
     bc_len = comp.bc_len;
     sp = stack;
-    memset(globals, 0, sizeof(globals));
+    xmemset(globals, 0, sizeof(globals));
     frame_count = 0;
 
     /* execute */
@@ -1574,7 +1584,7 @@ int main(int argc, char** argv) {
     const char* src;
     char* buf = NULL;
 
-    if (argc == 3 && strcmp(argv[1], "-e") == 0) {
+    if (argc == 3 && xstrcmp(argv[1], "-e") == 0) {
         src = argv[2];
     } else {
         buf = read_file(argv[1]);
