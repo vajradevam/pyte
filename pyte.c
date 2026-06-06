@@ -1450,13 +1450,8 @@ static void vm_exec(int start_pc) {
 
             if (callee.type == V_FUNC) {
                 FuncObj* f = callee.as_func;
-                /* Save frame */
                 if (frame_count >= FRAMES_MAX) { perr("stkovf\n"); vm_err_flag = 1; goto vm_err_ret; }
                 int n = nargs < f->nparams ? nargs : f->nparams;
-                /* Save frame */
-                if (frame_count >= FRAMES_MAX) { perr("stkovf\n"); vm_err_flag = 1; goto vm_err_ret; }
-                /* Save frame */
-                if (frame_count >= FRAMES_MAX) { perr("stkovf\n"); vm_err_flag = 1; goto vm_err_ret; }
                 Frame* fr = &frames[frame_count++];
                 fr->pc = pc;
                 fr->sp = sp;         /* save BEFORE adjusting sp */
