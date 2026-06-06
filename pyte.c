@@ -15,7 +15,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <setjmp.h>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -111,7 +110,7 @@ static int  str_arena_pos;
 
 static StrObj* str_alloc(int len) {
     int n = sizeof(StrObj) + len + 1;
-    if (str_arena_pos + n > STRING_POOL_MAX) { perr("pool\n"); exit(1); }
+    if (str_arena_pos + n > STRING_POOL_MAX) { perr("pool\n"); _exit(1); }
     StrObj* s = (StrObj*)(str_arena + str_arena_pos);
     str_arena_pos += n;
     s->len = len;
@@ -138,7 +137,7 @@ static char list_arena[LIST_ARENA_MAX];
 static int  list_arena_pos;
 
 static void* lalloc(int sz) {
-    if (list_arena_pos + sz > LIST_ARENA_MAX) { perr("lstfull\n"); exit(1); }
+    if (list_arena_pos + sz > LIST_ARENA_MAX) { perr("lstfull\n"); _exit(1); }
     void* p = list_arena + list_arena_pos;
     list_arena_pos += sz;
     return p;
@@ -219,7 +218,7 @@ static int lex_skip_ws(Lexer* L, int* at_line_start) {
     while (1) {
         int c = lex_peek(L);
         if (c == ' ') { lex_adv(L); if (*at_line_start) indent++; continue; }
-        if (c == '\t') { perr("tabs ");perr_int(L->line);perr("\n"); exit(1); }
+        if (c == '\t') { perr("tabs ");perr_int(L->line);perr("\n"); _exit(1); }
         if (c == '#') { while (lex_peek(L) && lex_peek(L) != '\n') lex_adv(L); continue; }
         if (c == '\n') {
             lex_adv(L);
@@ -262,7 +261,7 @@ static int lex_next(Lexer* L) {
             return T_DEDENT;
         }
         if (indent != L->indent_stack[L->indent_top]) {
-            perr("indent ");perr_int(L->line);perr("\n"); exit(1);
+            perr("indent ");perr_int(L->line);perr("\n"); _exit(1);
         }
         L->prev_indent = indent;
         /* Same level: leading whitespace already consumed, continue to tokens */
@@ -299,10 +298,10 @@ static int lex_next(Lexer* L) {
             if (lex_peek(L) == '\\') { lex_adv(L); if (!lex_peek(L)) break; }
             lex_adv(L);
         }
-        if (!lex_peek(L)) { perr("unterm ");perr_int(L->line);perr("\n"); exit(1); }
+        if (!lex_peek(L)) { perr("unterm ");perr_int(L->line);perr("\n"); _exit(1); }
         int len = L->pos - start;
         char buf[1024];
-        if (len >= 1023) { perr("strlong\n"); exit(1); }
+        if (len >= 1023) { perr("strlong\n"); _exit(1); }
         memcpy(buf, L->src + start, len); buf[len] = 0;
         lex_adv(L); /* skip closing quote */
         /* Simple unescape */
@@ -345,7 +344,7 @@ static int lex_next(Lexer* L) {
         int start = L->pos;
         while (((lex_peek(L)>='a'&&lex_peek(L)<='z')||(lex_peek(L)>='A'&&lex_peek(L)<='Z')||(lex_peek(L)>='0'&&lex_peek(L)<='9')||lex_peek(L)=='_') || lex_peek(L) == '_') lex_adv(L);
         int len = L->pos - start;
-        if (len >= IDENT_MAX-1) { perr("idlong\n"); exit(1); }
+        if (len >= IDENT_MAX-1) { perr("idlong\n"); _exit(1); }
         memcpy(L->ident, L->src + start, len); L->ident[len] = 0;
 
         struct { const char* w; int t; } kw[] = {
@@ -389,7 +388,7 @@ static int lex_next(Lexer* L) {
     case '.': lex_adv(L); return T_DOT;
     }
     perr("badchar\n");
-    exit(1);
+    _exit(1);
     return T_EOF;
 }
 
@@ -457,7 +456,7 @@ static void comp_init(Compiler* C, uint8_t* buf, int cap, const char* src) {
 }
 
 static void emit(Compiler* C, int b) {
-    if (C->bc_len >= C->bc_cap) { perr("bcfull\n"); exit(1); }
+    if (C->bc_len >= C->bc_cap) { perr("bcfull\n"); _exit(1); }
     C->bc[C->bc_len++] = b;
 }
 static void emit64(Compiler* C, int64_t v) {
@@ -482,7 +481,7 @@ static void next(Compiler* C) {
 static void expect(Compiler* C, int t) {
     if (C->tok != t) {
         perr("expect\n");
-        exit(1);
+        _exit(1);
     }
     next(C);
 }
@@ -622,7 +621,7 @@ static void primary(Compiler* C) {
     }
     default:
         perr("badtok\n");
-        exit(1);
+        _exit(1);
     }
 
     /* Postfix operations: subscript [...] */
@@ -671,7 +670,7 @@ static void expr_bp(Compiler* C, int minp) {
                 emit(C, OP_NOT);
                 continue;
             } else {
-                perr("notin\n"); exit(1);
+                perr("notin\n"); _exit(1);
             }
         }
 
@@ -830,13 +829,13 @@ static void stmt(Compiler* C) {
     case T_KW_FOR: {
         /* for var in range(...): */
         next(C);
-        if (C->tok != T_IDENT) { perr("forid\n"); exit(1); }
+        if (C->tok != T_IDENT) { perr("forid\n"); _exit(1); }
         char vname[IDENT_MAX]; strcpy(vname, C->lex.ident);
         next(C);
         expect(C, T_KW_IN);
 
         /* Only range(...) is supported */
-        if (C->tok != T_KW_RANGE) { perr("norange\n"); exit(1); }
+        if (C->tok != T_KW_RANGE) { perr("norange\n"); _exit(1); }
         next(C); expect(C, T_LPAREN);
         if (C->tok == T_RPAREN) {
             emit(C, OP_INT); emit64(C, 0);
@@ -888,7 +887,7 @@ static void stmt(Compiler* C) {
     case T_KW_DEF: {
         /* def name(params): body */
         next(C);
-        if (C->tok != T_IDENT) { perr("fnname\n"); exit(1); }
+        if (C->tok != T_IDENT) { perr("fnname\n"); _exit(1); }
         char fname[IDENT_MAX]; strcpy(fname, C->lex.ident);
         int slot = gslot(C, fname);
         next(C); expect(C, T_LPAREN);
@@ -898,7 +897,7 @@ static void stmt(Compiler* C) {
         int nparams = 0;
         if (C->tok != T_RPAREN) {
             while (1) {
-                if (C->tok != T_IDENT) { perr("param\n"); exit(1); }
+                if (C->tok != T_IDENT) { perr("param\n"); _exit(1); }
                 strcpy(params[nparams++], C->lex.ident);
                 next(C);
                 if (C->tok != T_COMMA) break;
@@ -951,7 +950,7 @@ static void stmt(Compiler* C) {
     }
     case T_KW_BREAK: {
         next(C);
-        if (C->depth == 0) { perr("brkout\n"); exit(1); }
+        if (C->depth == 0) { perr("brkout\n"); _exit(1); }
         int p = bcpos(C);
         emit(C, OP_JUMP); emit16(C, 0);
         LoopContext* lc = &C->loops[C->depth - 1];
@@ -960,7 +959,7 @@ static void stmt(Compiler* C) {
     }
     case T_KW_CONTINUE: {
         next(C);
-        if (C->depth == 0) { perr("contout\n"); exit(1); }
+        if (C->depth == 0) { perr("contout\n"); _exit(1); }
         emit(C, OP_JUMP); emit16(C, C->loops[C->depth - 1].continue_target);
         break;
     }
@@ -1026,7 +1025,7 @@ static void stmt(Compiler* C) {
                 emit(C, OP_POP_LIST);
                 emit(C, OP_POP); /* discard return value in statement context */
             } else {
-                perr("method\n"); exit(1);
+                perr("method\n"); _exit(1);
             }
         } else {
             /* Expression as statement - discard */
@@ -1039,7 +1038,7 @@ static void stmt(Compiler* C) {
         break;
     default:
         perr("badtok\n");
-        exit(1);
+        _exit(1);
     }
 }
 
@@ -1063,7 +1062,7 @@ typedef struct {
 static Frame frames[FRAMES_MAX];
 static int frame_count;
 
-static jmp_buf vm_err;
+static int vm_err_flag;
 
 static void print_val(Value v) {
     switch (v.type) {
@@ -1123,12 +1122,12 @@ static Value add_val(Value a, Value b) {
     if (a.type==V_FLOAT && b.type==V_INT) return v_float(a.as_float+b.as_int);
     if (a.type==V_STR && b.type==V_STR) {
         int l = a.as_str->len + b.as_str->len;
-        char buf[4096]; if (l>=4095) { perr("strlong\n"); longjmp(vm_err,1); }
+        char buf[4096]; if (l>=4095) { perr("strlong\n"); vm_err_flag = 1; return v_none(); }
         memcpy(buf,a.as_str->s,a.as_str->len);
         memcpy(buf+a.as_str->len,b.as_str->s,b.as_str->len);
         return v_str(str_intern(buf,l));
     }
-    perr("bad+\n"); longjmp(vm_err,1);
+    perr("bad+\n"); vm_err_flag = 1; return v_none();
     return v_none();
 }
 static Value sub_val(Value a, Value b) {
@@ -1136,7 +1135,7 @@ static Value sub_val(Value a, Value b) {
     if (a.type==V_FLOAT && b.type==V_FLOAT) return v_float(a.as_float-b.as_float);
     if (a.type==V_INT && b.type==V_FLOAT) return v_float(a.as_int-b.as_float);
     if (a.type==V_FLOAT && b.type==V_INT) return v_float(a.as_float-b.as_int);
-    perr("bad-\n"); longjmp(vm_err,1);
+    perr("bad-\n"); vm_err_flag = 1; return v_none();
     return v_none();
 }
 static Value mul_val(Value a, Value b) {
@@ -1144,41 +1143,41 @@ static Value mul_val(Value a, Value b) {
     if (a.type==V_FLOAT && b.type==V_FLOAT) return v_float(a.as_float*b.as_float);
     if (a.type==V_INT && b.type==V_FLOAT) return v_float(a.as_int*b.as_float);
     if (a.type==V_FLOAT && b.type==V_INT) return v_float(a.as_float*b.as_int);
-    perr("bad*\n"); longjmp(vm_err,1);
+    perr("bad*\n"); vm_err_flag = 1; return v_none();
     return v_none();
 }
 static Value div_val(Value a, Value b) {
     if (a.type==V_INT && b.type==V_INT) {
-        if (b.as_int==0) { perr("div0\n"); longjmp(vm_err,1); }
+        if (b.as_int==0) { perr("div0\n"); vm_err_flag = 1; return v_none(); }
         return v_int(a.as_int/b.as_int);
     }
     if (a.type==V_FLOAT && b.type==V_FLOAT) {
-        if (b.as_float==0.0) { perr("div0\n"); longjmp(vm_err,1); }
+        if (b.as_float==0.0) { perr("div0\n"); vm_err_flag = 1; return v_none(); }
         return v_float((double)((int)(a.as_float/b.as_float)));
     }
     if (a.type==V_INT && b.type==V_FLOAT) {
-        if (b.as_float==0.0) { perr("div0\n"); longjmp(vm_err,1); }
+        if (b.as_float==0.0) { perr("div0\n"); vm_err_flag = 1; return v_none(); }
         return v_float((double)((int)(a.as_int/b.as_float)));
     }
     if (a.type==V_FLOAT && b.type==V_INT) {
-        if (b.as_int==0) { perr("div0\n"); longjmp(vm_err,1); }
+        if (b.as_int==0) { perr("div0\n"); vm_err_flag = 1; return v_none(); }
         return v_float((double)((int)(a.as_float/b.as_int)));
     }
-    perr("bad//\n"); longjmp(vm_err,1);
+    perr("bad//\n"); vm_err_flag = 1; return v_none();
     return v_none();
 }
 static Value mod_val(Value a, Value b) {
     if (a.type==V_INT && b.type==V_INT) {
-        if (b.as_int==0) { perr("mod0\n"); longjmp(vm_err,1); }
+        if (b.as_int==0) { perr("mod0\n"); vm_err_flag = 1; return v_none(); }
         return v_int(a.as_int%b.as_int);
     }
-    perr("bad%%\n"); longjmp(vm_err,1);
+    perr("bad%%\n"); vm_err_flag = 1; return v_none();
     return v_none();
 }
 static Value neg_val(Value a) {
     if (a.type==V_INT) return v_int(-a.as_int);
     if (a.type==V_FLOAT) return v_float(-a.as_float);
-    perr("badneg\n"); longjmp(vm_err,1);
+    perr("badneg\n"); vm_err_flag = 1; return v_none();
     return v_none();
 }
 static Value cmp_val(int op, Value a, Value b) {
@@ -1211,7 +1210,7 @@ static Value cmp_val(int op, Value a, Value b) {
         switch(op){case OP_EQ:r=0;break;case OP_NE:r=1;break;default:goto unsup_cmp;}
     } else {
         unsup_cmp:
-        perr("badcmp\n"); longjmp(vm_err,1);
+        perr("badcmp\n"); vm_err_flag = 1; return v_none();
     }
     return v_bool(r);
 }
@@ -1225,7 +1224,7 @@ static void vm_exec(int start_pc) {
     Value locals[LOCALS_MAX];
     memset(locals,0,sizeof(locals));
 
-    if (setjmp(vm_err)) { sp = stack; frame_count = 0; return; }
+    
 
 #define RD8()  (bc[pc++])
 #define RD16() ({ int v = bc[pc] | (bc[pc+1]<<8); pc+=2; v; })
@@ -1289,7 +1288,7 @@ static void vm_exec(int start_pc) {
             Value v = POP();
             if (v.type == V_STR) PUSH(v_int(v.as_str->len));
             else if (v.type == V_LIST) PUSH(v_int(v.as_list->len));
-            else { perr("lentype\n"); longjmp(vm_err,1); }
+            else { perr("lentype\n"); vm_err_flag = 1; goto vm_err_ret; }
             break;
         }
 
@@ -1297,7 +1296,7 @@ static void vm_exec(int start_pc) {
             Value b = POP();
             Value a = POP();
             if (a.type != V_INT || b.type != V_INT) {
-                perr("rangeint\n"); longjmp(vm_err,1);
+                perr("rangeint\n"); vm_err_flag = 1; goto vm_err_ret;
             }
             PUSH(v_range_iter((int)a.as_int, (int)b.as_int, 1));
             break;
@@ -1316,7 +1315,7 @@ static void vm_exec(int start_pc) {
                 if (item.type != V_STR) { found = 0; }
                 else { {int fl=container.as_str->len,sl=item.as_str->len;found=0;for(int si=0;si<=fl-sl;si++){int m=1;for(int sj=0;sj<sl;sj++){if(container.as_str->s[si+sj]!=item.as_str->s[sj]){m=0;break;}}if(m){found=1;break;}}} }
             } else {
-                perr("intype\n"); longjmp(vm_err,1);
+                perr("intype\n"); vm_err_flag = 1; goto vm_err_ret;
             }
             PUSH(v_bool(found));
             break;
@@ -1326,7 +1325,7 @@ static void vm_exec(int start_pc) {
             int end = RD16();
             /* Get the range iterator from the stack, update it in place */
             Value* itp = &TOP();
-            if (itp->type != V_RANGE_ITER) { perr("noiter\n"); longjmp(vm_err,1); }
+            if (itp->type != V_RANGE_ITER) { perr("noiter\n"); vm_err_flag = 1; goto vm_err_ret; }
             if (itp->as_range.step > 0 && itp->as_range.cur < itp->as_range.stop) {
                 PUSH(v_int(itp->as_range.cur));
                 itp->as_range.cur += itp->as_range.step;
@@ -1354,19 +1353,19 @@ static void vm_exec(int start_pc) {
         case OP_GET: {
             Value idx = POP();
             Value obj = POP();
-            if (idx.type!=V_INT) { perr("idxint\n"); longjmp(vm_err,1); }
+            if (idx.type!=V_INT) { perr("idxint\n"); vm_err_flag = 1; goto vm_err_ret; }
             int i = (int)idx.as_int;
             if (obj.type==V_STR) {
                 if (i < 0) i += obj.as_str->len;
-                if (i<0||i>=obj.as_str->len) { perr("stridx\n"); longjmp(vm_err,1); }
+                if (i<0||i>=obj.as_str->len) { perr("stridx\n"); vm_err_flag = 1; goto vm_err_ret; }
                 char buf[2] = {obj.as_str->s[i], 0};
                 PUSH(v_str(str_intern(buf,1)));
             } else if (obj.type==V_LIST) {
                 if (i < 0) i += obj.as_list->len;
-                if (i<0||i>=obj.as_list->len) { perr("lstidx\n"); longjmp(vm_err,1); }
+                if (i<0||i>=obj.as_list->len) { perr("lstidx\n"); vm_err_flag = 1; goto vm_err_ret; }
                 PUSH(obj.as_list->items[i]);
             } else {
-                perr("nosub\n"); longjmp(vm_err,1);
+                perr("nosub\n"); vm_err_flag = 1; goto vm_err_ret;
             }
             break;
         }
@@ -1375,11 +1374,11 @@ static void vm_exec(int start_pc) {
             Value val = POP();
             Value idx = POP();
             Value lst = POP();
-            if (lst.type!=V_LIST) { perr("nosubl\n"); longjmp(vm_err,1); }
-            if (idx.type!=V_INT) { perr("idxint\n"); longjmp(vm_err,1); }
+            if (lst.type!=V_LIST) { perr("nosubl\n"); vm_err_flag = 1; goto vm_err_ret; }
+            if (idx.type!=V_INT) { perr("idxint\n"); vm_err_flag = 1; goto vm_err_ret; }
             int i = (int)idx.as_int;
             if (i < 0) i += lst.as_list->len;
-            if (i<0||i>=lst.as_list->len) { perr("lstidx\n"); longjmp(vm_err,1); }
+            if (i<0||i>=lst.as_list->len) { perr("lstidx\n"); vm_err_flag = 1; goto vm_err_ret; }
             lst.as_list->items[i] = val;
             PUSH(val);
             break;
@@ -1388,7 +1387,7 @@ static void vm_exec(int start_pc) {
         case OP_APPEND: {
             Value val = POP();
             Value lst = POP();
-            if (lst.type!=V_LIST) { perr("noapp\n"); longjmp(vm_err,1); }
+            if (lst.type!=V_LIST) { perr("noapp\n"); vm_err_flag = 1; goto vm_err_ret; }
             list_ensure(lst.as_list, lst.as_list->len + 1);
             lst.as_list->items[lst.as_list->len++] = val;
             PUSH(lst);
@@ -1397,8 +1396,8 @@ static void vm_exec(int start_pc) {
 
         case OP_POP_LIST: {
             Value lst = POP();
-            if (lst.type!=V_LIST) { perr("nopop\n"); longjmp(vm_err,1); }
-            if (lst.as_list->len == 0) { perr("popemp\n"); longjmp(vm_err,1); }
+            if (lst.type!=V_LIST) { perr("nopop\n"); vm_err_flag = 1; goto vm_err_ret; }
+            if (lst.as_list->len == 0) { perr("popemp\n"); vm_err_flag = 1; goto vm_err_ret; }
             Value ret = lst.as_list->items[--lst.as_list->len];
             PUSH(ret);
             break;
@@ -1412,12 +1411,12 @@ static void vm_exec(int start_pc) {
             if (callee.type == V_FUNC) {
                 FuncObj* f = callee.as_func;
                 /* Save frame */
-                if (frame_count >= FRAMES_MAX) { perr("stkovf\n"); longjmp(vm_err,1); }
+                if (frame_count >= FRAMES_MAX) { perr("stkovf\n"); vm_err_flag = 1; goto vm_err_ret; }
                 int n = nargs < f->nparams ? nargs : f->nparams;
                 /* Save frame */
-                if (frame_count >= FRAMES_MAX) { perr("stkovf\n"); longjmp(vm_err,1); }
+                if (frame_count >= FRAMES_MAX) { perr("stkovf\n"); vm_err_flag = 1; goto vm_err_ret; }
                 /* Save frame */
-                if (frame_count >= FRAMES_MAX) { perr("stkovf\n"); longjmp(vm_err,1); }
+                if (frame_count >= FRAMES_MAX) { perr("stkovf\n"); vm_err_flag = 1; goto vm_err_ret; }
                 Frame* fr = &frames[frame_count++];
                 fr->pc = pc;
                 fr->sp = sp;         /* save BEFORE adjusting sp */
@@ -1447,14 +1446,14 @@ static void vm_exec(int start_pc) {
                 }
                 case 1: { /* range */
                     if (nargs == 1) {
-                        if (args[0].type != V_INT) { perr("rangeint\n"); longjmp(vm_err,1); }
+                        if (args[0].type != V_INT) { perr("rangeint\n"); vm_err_flag = 1; goto vm_err_ret; }
                         sp -= 2; /* pop arg and callee */
                         PUSH(v_range_iter(0,(int)args[0].as_int,1));
                     } else if (nargs == 2) {
-                        if (args[0].type!=V_INT||args[1].type!=V_INT) { perr("rangeint\n"); longjmp(vm_err,1); }
+                        if (args[0].type!=V_INT||args[1].type!=V_INT) { perr("rangeint\n"); vm_err_flag = 1; goto vm_err_ret; }
                         sp -= 3;
                         PUSH(v_range_iter((int)args[0].as_int,(int)args[1].as_int,1));
-                    } else { perr("rangebad\n"); longjmp(vm_err,1); }
+                    } else { perr("rangebad\n"); vm_err_flag = 1; goto vm_err_ret; }
                     break;
                 }
                 default:
@@ -1464,7 +1463,7 @@ static void vm_exec(int start_pc) {
                 }
             } else {
                 perr("nofn\n");
-                longjmp(vm_err,1);
+                vm_err_flag = 1; goto vm_err_ret;
             }
             break;
         }
@@ -1493,7 +1492,7 @@ static void vm_exec(int start_pc) {
             int nparams = RD8();
             int nloc = RD8();
             FuncObj* f = (FuncObj*)malloc(sizeof(FuncObj));
-            if (!f) { perr("oom\n"); exit(1); }
+            if (!f) { perr("oom\n"); _exit(1); }
             f->bc_start = body;
             f->nparams = nparams;
             f->nlocals = nloc;
@@ -1503,9 +1502,14 @@ static void vm_exec(int start_pc) {
 
         default:
             perr("badop\n");
-            longjmp(vm_err,1);
+            vm_err_flag = 1; goto vm_err_ret;
         }
     }
+
+  vm_err_ret:
+    sp = stack;
+    frame_count = 0;
+    return;
 }
 
 /* ================================================================
@@ -1514,7 +1518,7 @@ static void vm_exec(int start_pc) {
 static void run(const char* src) {
     /* Compile */
     uint8_t* bytecode = (uint8_t*)malloc(BYTECODE_MAX);
-    if (!bytecode) { perr("oom\n"); exit(1); }
+    if (!bytecode) { perr("oom\n"); _exit(1); }
 
     Compiler comp;
     comp_init(&comp, bytecode, BYTECODE_MAX, src);
