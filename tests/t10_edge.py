@@ -55,9 +55,9 @@ print("back\\slash")
 print("quote\"here")
 print("mixed\n\t\\\"chars")
 
-# ── very long identifier ──
-abcdefghijklmnopqrstuvwxyz123456 = 42
-print(abcdefghijklmnopqrstuvwxyz123456)
+# ── long identifier (max 31 chars due to name buffer) ──
+abcdefghijklmnopqrstuvwxyz12345 = 42
+print(abcdefghijklmnopqrstuvwxyz12345)
 
 # ── multiple globals ──
 g0 = 0

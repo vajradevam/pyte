@@ -476,9 +476,9 @@ typedef struct {
 typedef struct {
     uint8_t* bc;
     int bc_len, bc_cap;
-    struct { char name[32]; } globals[GLOBALS_MAX];
+    struct { char name[IDENT_MAX]; } globals[GLOBALS_MAX];
     int nglobals;
-    struct { char name[32]; } locals[LOCALS_MAX];
+    struct { char name[IDENT_MAX]; } locals[LOCALS_MAX];
     int nlocals;
     Lexer lex;
     int tok;
@@ -531,7 +531,7 @@ static int gslot(Compiler* C, const char* name) {
     for (int i = 0; i < C->nglobals; i++)
         if (xstrcmp(C->globals[i].name, name)==0) return i;
     int s = C->nglobals++;
-    size_t sl = xstrlen(name); if (sl>31) sl=31;
+    size_t sl = xstrlen(name); if (sl>IDENT_MAX-1) sl=IDENT_MAX-1;
     xmemcpy(C->globals[s].name, name, sl); C->globals[s].name[sl]=0;
     return s;
 }
@@ -539,7 +539,7 @@ static int lslot(Compiler* C, const char* name) {
     for (int i = 0; i < C->nlocals; i++)
         if (xstrcmp(C->locals[i].name, name)==0) return i;
     int s = C->nlocals++;
-    size_t sl = xstrlen(name); if (sl>31) sl=31;
+    size_t sl = xstrlen(name); if (sl>IDENT_MAX-1) sl=IDENT_MAX-1;
     xmemcpy(C->locals[s].name, name, sl); C->locals[s].name[sl]=0;
     return s;
 }
