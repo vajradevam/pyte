@@ -1674,13 +1674,13 @@ static void vm_exec(int start_pc) {
 /* ================================================================
  * Top-level execution
  * ================================================================ */
-static void run_ext(const char* src, int keep_globals, int print_expr);
+static void run_ext(const char* src, int keep_globals, int print_expr, int argc, char** argv);
 
-static void run(const char* src) {
-    run_ext(src, 0, 0);
+static void run(const char* src, int sc_argc, char** sc_argv) {
+    run_ext(src, 0, 0, sc_argc, sc_argv);
 }
 
-static void run_ext(const char* src, int keep_globals, int print_expr) {
+static void run_ext(const char* src, int keep_globals, int print_expr, int argc, char** argv) {
     /* Compile */
     uint8_t* bytecode = (uint8_t*)malloc(BYTECODE_MAX);
     if (!bytecode) { fprintf(stderr,"Out of memory\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
@@ -1688,6 +1688,13 @@ static void run_ext(const char* src, int keep_globals, int print_expr) {
     Compiler comp;
     comp_init(&comp, bytecode, BYTECODE_MAX, src);
     comp.print_expr = print_expr;
+
+    /* Pre-register 'argv' global if we have args */
+    int argv_slot = -1;
+    if (argc > 0) {
+        argv_slot = gslot(&comp, "argv");
+    }
+
     next(&comp);
 
     /* Compile top-level statements */
@@ -1704,6 +1711,18 @@ static void run_ext(const char* src, int keep_globals, int print_expr) {
     sp = stack;
     if (!keep_globals) memset(globals, 0, sizeof(globals));
     frame_count = 0;
+
+    /* Initialize argv global */
+    if (argv_slot >= 0 && argc > 0) {
+        ListObj* lst = list_new();
+        if (!lst) { fprintf(stderr,"Out of memory\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        list_ensure(lst, argc);
+        for (int i = 0; i < argc; i++) {
+            lst->items[i] = v_str(str_intern(argv[i], (int)strlen(argv[i])));
+        }
+        lst->len = argc;
+        globals[argv_slot] = v_list(lst);
+    }
 
     /* Execute */
     vm_exec(0);
@@ -1803,7 +1822,7 @@ static void repl(void) {
                 /* Compilation or runtime error — print newline and continue */
                 fprintf(stderr, "\n");
             } else {
-                run_ext(inbuf, 1, 1);
+                run_ext(inbuf, 1, 1, 0, NULL);
             }
 
             inpos = 0;
@@ -1820,16 +1839,26 @@ int main(int argc, char** argv) {
 
     const char* src;
     char* buf = NULL;
+    int sc_argc = 0;
+    char** sc_argv = NULL;
 
-    if (argc == 3 && strcmp(argv[1], "-e") == 0) {
+    if (argc >= 3 && strcmp(argv[1], "-e") == 0) {
         src = argv[2];
+        if (argc > 3) {
+            sc_argc = argc - 3;
+            sc_argv = argv + 3;
+        }
     } else {
         buf = read_file(argv[1]);
         if (!buf) return 1;
         src = buf;
+        if (argc > 2) {
+            sc_argc = argc - 2;
+            sc_argv = argv + 2;
+        }
     }
 
-    run(src);
+    run(src, sc_argc, sc_argv);
     free(buf);
     return 0;
 }
