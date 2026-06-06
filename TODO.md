@@ -6,9 +6,9 @@
 - [x] **Fix nested for-break** — break now pops iterator before exiting
 - [x] **String methods** — `.upper()`, `.lower()`, `.strip()`
 - [x] **REPL** — interactive mode with multi-line block support
-- [x] **Improve REPL** — expression result printing, multi-line handling
-- [ ] **REPL error recovery** — don't exit on compilation errors
-- [ ] **REPL command history**
+- [x] **Improve REPL** — expression result printing, multi-line handling, error recovery
+- [x] **`sys.argv`** — command-line args as `argv` list
+- [ ] **REPL command history
 
 ## Code quality
 - [ ] **Split into multiple files** — `lexer.c`, `compile.c`, `vm.c`, `main.c`, `pyte.h`

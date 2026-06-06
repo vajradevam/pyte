@@ -16,8 +16,39 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <ctype.h>
 #include <setjmp.h>
+
+#include <unistd.h>
+#include <fcntl.h>
+
+/* Tiny output: write-based, no stdio formatting */
+static void pstr(const char* s) {
+    write(1, s, strlen(s));
+}
+
+static void perr(const char* s) {
+    write(2, s, strlen(s));
+}
+static void pint(long long n) {
+    char buf[32], *p = buf + sizeof(buf);
+    unsigned long long u;
+    if (n < 0) { u = 0ULL - (unsigned long long)n; } else { u = n; }
+    *--p = 0;
+    do { *--p = '0' + u % 10; u /= 10; } while (u);
+    if (n < 0) *--p = '-';
+    write(1, p, buf + sizeof(buf) - 1 - p);
+}
+
+static void perr_int(long long n) {
+    char buf[32], *p = buf + sizeof(buf);
+    unsigned long long u;
+    if (n < 0) { u = 0ULL - (unsigned long long)n; } else { u = n; }
+    *--p = 0;
+    do { *--p = '0' + u % 10; u /= 10; } while (u);
+    if (n < 0) *--p = '-';
+    write(2, p, buf + sizeof(buf) - 1 - p);
+}
+static void newline(void) { write(1, "\n", 1); }
 
 /* Error recovery for REPL */
 static jmp_buf comp_jmp;
@@ -109,7 +140,7 @@ static int  str_arena_pos;
 
 static StrObj* str_alloc(int len) {
     int n = sizeof(StrObj) + len + 1;
-    if (str_arena_pos + n > STRING_POOL_MAX) { fprintf(stderr,"Error: string pool full\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+    if (str_arena_pos + n > STRING_POOL_MAX) { perr("str-pool\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
     StrObj* s = (StrObj*)(str_arena + str_arena_pos);
     str_arena_pos += n;
     s->len = len;
@@ -136,7 +167,7 @@ static char list_arena[LIST_ARENA_MAX];
 static int  list_arena_pos;
 
 static void* lalloc(int sz) {
-    if (list_arena_pos + sz > LIST_ARENA_MAX) { fprintf(stderr,"Error: list arena full\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+    if (list_arena_pos + sz > LIST_ARENA_MAX) { perr("lst-full\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
     void* p = list_arena + list_arena_pos;
     list_arena_pos += sz;
     return p;
@@ -177,58 +208,7 @@ typedef enum {
     T_KW_BREAK, T_KW_CONTINUE,
 } TokenType;
 
-static const char* tok_name(int t) {
-    switch(t) {
-    case T_EOF: return "EOF";
-    case T_NEWLINE: return "NEWLINE";
-    case T_INDENT: return "INDENT";
-    case T_DEDENT: return "DEDENT";
-    case T_IDENT: return "IDENT";
-    case T_INT: return "INT";
-    case T_FLOAT: return "FLOAT";
-    case T_STR: return "STR";
-    case T_PLUS: return "+";
-    case T_MINUS: return "-";
-    case T_STAR: return "*";
-    case T_SLASH: return "//";
-    case T_PERCENT: return "%";
-    case T_EQ: return "=";
-    case T_EQEQ: return "==";
-    case T_NE: return "!=";
-    case T_LT: return "<";
-    case T_GT: return ">";
-    case T_LE: return "<=";
-    case T_GE: return ">=";
-    case T_LPAREN: return "(";
-    case T_RPAREN: return ")";
-    case T_COMMA: return ",";
-    case T_COLON: return ":";
-    case T_LBRACKET: return "[";
-    case T_RBRACKET: return "]";
-    case T_DOT: return ".";
-    case T_KW_AND: return "and";
-    case T_KW_OR: return "or";
-    case T_KW_NOT: return "not";
-    case T_KW_IF: return "if";
-    case T_KW_ELIF: return "elif";
-    case T_KW_ELSE: return "else";
-    case T_KW_WHILE: return "while";
-    case T_KW_FOR: return "for";
-    case T_KW_IN: return "in";
-    case T_KW_DEF: return "def";
-    case T_KW_RETURN: return "return";
-    case T_KW_TRUE: return "True";
-    case T_KW_FALSE: return "False";
-    case T_KW_NONE: return "None";
-    case T_KW_PRINT: return "print";
-    case T_KW_LEN: return "len";
-    case T_KW_RANGE: return "range";
-    case T_KW_APPEND: return "append";
-    case T_KW_BREAK: return "break";
-    case T_KW_CONTINUE: return "continue";
-    default: return "???";
-    }
-}
+
 
 typedef struct {
     const char* src;
@@ -268,7 +248,7 @@ static int lex_skip_ws(Lexer* L, int* at_line_start) {
     while (1) {
         int c = lex_peek(L);
         if (c == ' ') { lex_adv(L); if (*at_line_start) indent++; continue; }
-        if (c == '\t') { fprintf(stderr,"Error: tabs not supported line %d\n",L->line); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (c == '\t') { perr("tabs line "); perr_int(L->line); perr("\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         if (c == '#') { while (lex_peek(L) && lex_peek(L) != '\n') lex_adv(L); continue; }
         if (c == '\n') {
             lex_adv(L);
@@ -311,7 +291,7 @@ static int lex_next(Lexer* L) {
             return T_DEDENT;
         }
         if (indent != L->indent_stack[L->indent_top]) {
-            fprintf(stderr,"Error: inconsistent indent at line %d\n",L->line); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
+            perr("indent line "); perr_int(L->line); perr("\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
         }
         L->prev_indent = indent;
         /* Same level: leading whitespace already consumed, continue to tokens */
@@ -348,10 +328,10 @@ static int lex_next(Lexer* L) {
             if (lex_peek(L) == '\\') { lex_adv(L); if (!lex_peek(L)) break; }
             lex_adv(L);
         }
-        if (!lex_peek(L)) { fprintf(stderr,"Error: unterminated string line %d\n",L->line); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (!lex_peek(L)) { perr("unterm-str line "); perr_int(L->line); perr("\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         int len = L->pos - start;
         char buf[1024];
-        if (len >= 1023) { fprintf(stderr,"Error: string too long\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (len >= 1023) { perr("str-long\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         memcpy(buf, L->src + start, len); buf[len] = 0;
         lex_adv(L); /* skip closing quote */
         /* Simple unescape */
@@ -390,11 +370,11 @@ static int lex_next(Lexer* L) {
     }
 
     /* Identifier / keyword */
-    if (isalpha(c) || c == '_') {
+    if (((c>='a'&&c<='z')||(c>='A'&&c<='Z')||c=='_') || c == '_') {
         int start = L->pos;
-        while (isalnum(lex_peek(L)) || lex_peek(L) == '_') lex_adv(L);
+        while (((lex_peek(L)>='a'&&lex_peek(L)<='z')||(lex_peek(L)>='A'&&lex_peek(L)<='Z')||(lex_peek(L)>='0'&&lex_peek(L)<='9')||lex_peek(L)=='_') || lex_peek(L) == '_') lex_adv(L);
         int len = L->pos - start;
-        if (len >= IDENT_MAX-1) { fprintf(stderr,"Error: identifier too long\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (len >= IDENT_MAX-1) { perr("id-long\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         memcpy(L->ident, L->src + start, len); L->ident[len] = 0;
 
         struct { const char* w; int t; } kw[] = {
@@ -437,7 +417,7 @@ static int lex_next(Lexer* L) {
     case ']': lex_adv(L); return T_RBRACKET;
     case '.': lex_adv(L); return T_DOT;
     }
-    fprintf(stderr,"Error: unexpected char '%c'(%d) at line %d\n",c,c,L->line);
+    perr("Error: unexpected char '"); { char _c = c; write(2, &_c, 1); } perr("'("); perr_int(c); perr(") at line "); perr_int(L->line); perr("\n");
     if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
     return T_EOF;
 }
@@ -513,7 +493,7 @@ static void comp_init(Compiler* C, uint8_t* buf, int cap, const char* src) {
 }
 
 static void emit(Compiler* C, int b) {
-    if (C->bc_len >= C->bc_cap) { fprintf(stderr,"Error: bytecode overflow\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+    if (C->bc_len >= C->bc_cap) { perr("bc-over\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
     C->bc[C->bc_len++] = b;
 }
 static void emit64(Compiler* C, int64_t v) {
@@ -537,7 +517,7 @@ static void next(Compiler* C) {
 }
 static void expect(Compiler* C, int t) {
     if (C->tok != t) {
-        fprintf(stderr,"Error: expected '%s' got '%s' at line %d\n",tok_name(t),tok_name(C->tok),C->lex.line);
+        perr("expect-tok "); perr_int(t); perr(" got "); perr_int(C->tok); perr(" at line "); perr_int(C->lex.line); perr("\n");
         if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
     }
     next(C);
@@ -677,8 +657,7 @@ static void primary(Compiler* C) {
         break;
     }
     default:
-        fprintf(stderr,"Error: unexpected token '%s' in expression at line %d\n",
-                tok_name(C->tok), C->lex.line);
+        perr("Error: unexpected token at line "); perr_int(C->lex.line); perr("\n");
         if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
     }
 
@@ -728,7 +707,7 @@ static void expr_bp(Compiler* C, int minp) {
                 emit(C, OP_NOT);
                 continue;
             } else {
-                fprintf(stderr,"Error: 'not' must be followed by 'in' in this context\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
+                perr("not-in\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
             }
         }
 
@@ -887,7 +866,7 @@ static void stmt(Compiler* C) {
     case T_KW_FOR: {
         /* for var in range(...): */
         next(C);
-        if (C->tok != T_IDENT) { fprintf(stderr,"Error: expected identifier after 'for'\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (C->tok != T_IDENT) { perr("Error: expected identifier after 'for'\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         char vname[IDENT_MAX]; strcpy(vname, C->lex.ident);
         next(C);
         expect(C, T_KW_IN);
@@ -951,7 +930,7 @@ static void stmt(Compiler* C) {
     case T_KW_DEF: {
         /* def name(params): body */
         next(C);
-        if (C->tok != T_IDENT) { fprintf(stderr,"Error: expected function name\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (C->tok != T_IDENT) { perr("need-fn\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         char fname[IDENT_MAX]; strcpy(fname, C->lex.ident);
         int slot = gslot(C, fname);
         next(C); expect(C, T_LPAREN);
@@ -961,7 +940,7 @@ static void stmt(Compiler* C) {
         int nparams = 0;
         if (C->tok != T_RPAREN) {
             while (1) {
-                if (C->tok != T_IDENT) { fprintf(stderr,"Error: expected parameter name\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+                if (C->tok != T_IDENT) { perr("need-param\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
                 strcpy(params[nparams++], C->lex.ident);
                 next(C);
                 if (C->tok != T_COMMA) break;
@@ -1014,7 +993,7 @@ static void stmt(Compiler* C) {
     }
     case T_KW_BREAK: {
         next(C);
-        if (C->depth == 0) { fprintf(stderr,"Error: break outside loop\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (C->depth == 0) { perr("break-out\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         int p = bcpos(C);
         emit(C, OP_JUMP); emit16(C, 0);
         LoopContext* lc = &C->loops[C->depth - 1];
@@ -1023,7 +1002,7 @@ static void stmt(Compiler* C) {
     }
     case T_KW_CONTINUE: {
         next(C);
-        if (C->depth == 0) { fprintf(stderr,"Error: continue outside loop\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (C->depth == 0) { perr("cont-out\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         emit(C, OP_JUMP); emit16(C, C->loops[C->depth - 1].continue_target);
         break;
     }
@@ -1106,7 +1085,7 @@ static void stmt(Compiler* C) {
                 if (C->in_func) { emit(C, OP_STORE); emit(C,s); }
                 else { emit(C, OP_GSTORE); emit(C,s); }
             } else {
-                fprintf(stderr,"Error: unknown method '%s'\n",C->lex.ident); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
+                perr("Error: unknown method '"); perr(C->lex.ident); perr("'\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
             }
         } else {
             /* Expression as statement - compile and discard/print */
@@ -1121,7 +1100,7 @@ static void stmt(Compiler* C) {
             else emit(C, OP_POP);
             /* Expression must be followed by newline/EOF */
             if (C->tok != T_NEWLINE && C->tok != T_DEDENT && C->tok != T_EOF) {
-                fprintf(stderr,"Error: expected newline after statement at line %d\n",C->lex.line);
+                perr("newline line "); perr_int(C->lex.line); perr("\n");
                 if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
             }
         }
@@ -1146,12 +1125,12 @@ static void stmt(Compiler* C) {
             else emit(C, OP_POP);
             /* Expression must be followed by newline/EOF */
             if (C->tok != T_NEWLINE && C->tok != T_DEDENT && C->tok != T_EOF) {
-                fprintf(stderr,"Error: expected newline after statement at line %d\n",C->lex.line);
+                perr("newline line "); perr_int(C->lex.line); perr("\n");
                 if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
             }
             break;
         default:
-            fprintf(stderr,"Error: unexpected '%s' at line %d\n",tok_name(C->tok),C->lex.line);
+            perr("bad-tok "); perr_int(C->tok); perr(" at line "); perr_int(C->lex.line); perr("\n");
             if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
         }
         break;
@@ -1181,32 +1160,65 @@ static int frame_count;
 
 static jmp_buf vm_err;
 
+
+static void pfloat_out(double f) {
+    char buf[64];
+    int pos = 0;
+    if (f < 0) { buf[pos++] = '-'; f = -f; }
+    if (f != f) { write(1, "nan", 3); return; }
+    if (f > 1e15) { write(1, "inf", 3); return; }
+    /* Integer part */
+    long long int_part = (long long)f;
+    double frac = f - (double)int_part;
+    /* Print integer part */
+    {
+        char ibuf[32], *p = ibuf + sizeof(ibuf);
+        unsigned long long u = int_part < 0 ? 0ULL - (unsigned long long)int_part : (unsigned long long)int_part;
+        *--p = 0;
+        do { *--p = '0' + u % 10; u /= 10; } while (u);
+        while (*p) buf[pos++] = *p++;
+    }
+    if (frac != 0.0) {
+        buf[pos++] = '.';
+        for (int i = 0; i < 10; i++) {
+            frac *= 10;
+            int d = (int)frac;
+            buf[pos++] = '0' + d;
+            frac -= d;
+            if (frac == 0.0) break;
+        }
+        /* Trim trailing zeros */
+        while (pos > 1 && buf[pos-1] == '0') pos--;
+    }
+    write(1, buf, pos);
+}
+
 static void print_val(Value v) {
     switch (v.type) {
-    case V_NONE:  printf("None"); break;
-    case V_BOOL:  printf(v.as_bool?"True":"False"); break;
-    case V_INT:   printf("%lld",(long long)v.as_int); break;
-    case V_FLOAT: printf("%g",v.as_float); break;
-    case V_STR:   printf("%s",v.as_str->s); break;
+    case V_NONE:  pstr("None"); break;
+    case V_BOOL:  pstr(v.as_bool ? "True" : "False"); break;
+    case V_INT:   pint(v.as_int); break;
+    case V_FLOAT: pfloat_out(v.as_float); break;
+    case V_STR:   pstr(v.as_str->s); break;
     case V_LIST: {
-        printf("[");
+        pstr("[");
         for (int i=0;i<v.as_list->len;i++) {
-            if(i) printf(", ");
+            if(i) pstr(", ");
             print_val(v.as_list->items[i]);
         }
-        printf("]");
+        pstr("]");
         break;
     }
-    case V_FUNC:  printf("<function>"); break;
-    case V_BUILTIN: printf("<builtin %d>",v.as_builtin_id); break;
-    case V_RANGE_ITER: printf("<range>"); break;
-    case V_LIST_ITER: printf("<list_iter>"); break;
+    case V_FUNC:  pstr("<function>"); break;
+    case V_BUILTIN: pstr("<builtin "); pint(v.as_builtin_id); pstr(">"); break;
+    case V_RANGE_ITER: pstr("<range>"); break;
+    case V_LIST_ITER: pstr("<list_iter>"); break;
     }
 }
 
 static void print_vals(Value* a, int n) {
-    for (int i=0;i<n;i++) { if(i) printf(" "); print_val(a[i]); }
-    printf("\n");
+    for (int i=0;i<n;i++) { if(i) pstr(" "); print_val(a[i]); }
+    newline();
 }
 
 static Value add_val(Value a, Value b) {
@@ -1216,12 +1228,12 @@ static Value add_val(Value a, Value b) {
     if (a.type==V_FLOAT && b.type==V_INT) return v_float(a.as_float+b.as_int);
     if (a.type==V_STR && b.type==V_STR) {
         int l = a.as_str->len + b.as_str->len;
-        char buf[4096]; if (l>=4095) { fprintf(stderr,"String too long\n"); longjmp(vm_err,1); }
+        char buf[4096]; if (l>=4095) { perr("str-long\n"); longjmp(vm_err,1); }
         memcpy(buf,a.as_str->s,a.as_str->len);
         memcpy(buf+a.as_str->len,b.as_str->s,b.as_str->len);
         return v_str(str_intern(buf,l));
     }
-    fprintf(stderr,"Error: unsupported +\n"); longjmp(vm_err,1);
+    perr("bad-+\n"); longjmp(vm_err,1);
     return v_none();
 }
 static Value sub_val(Value a, Value b) {
@@ -1229,7 +1241,7 @@ static Value sub_val(Value a, Value b) {
     if (a.type==V_FLOAT && b.type==V_FLOAT) return v_float(a.as_float-b.as_float);
     if (a.type==V_INT && b.type==V_FLOAT) return v_float(a.as_int-b.as_float);
     if (a.type==V_FLOAT && b.type==V_INT) return v_float(a.as_float-b.as_int);
-    fprintf(stderr,"Error: unsupported -\n"); longjmp(vm_err,1);
+    perr("bad--\n"); longjmp(vm_err,1);
     return v_none();
 }
 static Value mul_val(Value a, Value b) {
@@ -1237,41 +1249,41 @@ static Value mul_val(Value a, Value b) {
     if (a.type==V_FLOAT && b.type==V_FLOAT) return v_float(a.as_float*b.as_float);
     if (a.type==V_INT && b.type==V_FLOAT) return v_float(a.as_int*b.as_float);
     if (a.type==V_FLOAT && b.type==V_INT) return v_float(a.as_float*b.as_int);
-    fprintf(stderr,"Error: unsupported *\n"); longjmp(vm_err,1);
+    perr("bad-*\n"); longjmp(vm_err,1);
     return v_none();
 }
 static Value div_val(Value a, Value b) {
     if (a.type==V_INT && b.type==V_INT) {
-        if (b.as_int==0) { fprintf(stderr,"Division by zero\n"); longjmp(vm_err,1); }
+        if (b.as_int==0) { perr("div0\n"); longjmp(vm_err,1); }
         return v_int(a.as_int/b.as_int);
     }
     if (a.type==V_FLOAT && b.type==V_FLOAT) {
-        if (b.as_float==0.0) { fprintf(stderr,"Division by zero\n"); longjmp(vm_err,1); }
+        if (b.as_float==0.0) { perr("div0\n"); longjmp(vm_err,1); }
         return v_float((double)((int)(a.as_float/b.as_float)));
     }
     if (a.type==V_INT && b.type==V_FLOAT) {
-        if (b.as_float==0.0) { fprintf(stderr,"Division by zero\n"); longjmp(vm_err,1); }
+        if (b.as_float==0.0) { perr("div0\n"); longjmp(vm_err,1); }
         return v_float((double)((int)(a.as_int/b.as_float)));
     }
     if (a.type==V_FLOAT && b.type==V_INT) {
-        if (b.as_int==0) { fprintf(stderr,"Division by zero\n"); longjmp(vm_err,1); }
+        if (b.as_int==0) { perr("div0\n"); longjmp(vm_err,1); }
         return v_float((double)((int)(a.as_float/b.as_int)));
     }
-    fprintf(stderr,"Error: unsupported //\n"); longjmp(vm_err,1);
+    perr("bad-//\n"); longjmp(vm_err,1);
     return v_none();
 }
 static Value mod_val(Value a, Value b) {
     if (a.type==V_INT && b.type==V_INT) {
-        if (b.as_int==0) { fprintf(stderr,"Modulo by zero\n"); longjmp(vm_err,1); }
+        if (b.as_int==0) { perr("mod0\n"); longjmp(vm_err,1); }
         return v_int(a.as_int%b.as_int);
     }
-    fprintf(stderr,"Error: unsupported %%\n"); longjmp(vm_err,1);
+    perr("bad-%\n"); longjmp(vm_err,1);
     return v_none();
 }
 static Value neg_val(Value a) {
     if (a.type==V_INT) return v_int(-a.as_int);
     if (a.type==V_FLOAT) return v_float(-a.as_float);
-    fprintf(stderr,"Error: unsupported negation\n"); longjmp(vm_err,1);
+    perr("bad-neg\n"); longjmp(vm_err,1);
     return v_none();
 }
 static Value cmp_val(int op, Value a, Value b) {
@@ -1304,7 +1316,7 @@ static Value cmp_val(int op, Value a, Value b) {
         switch(op){case OP_EQ:r=0;break;case OP_NE:r=1;break;default:goto unsup_cmp;}
     } else {
         unsup_cmp:
-        fprintf(stderr,"Error: unsupported comparison\n"); longjmp(vm_err,1);
+        perr("bad-cmp\n"); longjmp(vm_err,1);
     }
     return v_bool(r);
 }
@@ -1382,7 +1394,7 @@ static void vm_exec(int start_pc) {
             Value v = POP();
             if (v.type == V_STR) PUSH(v_int(v.as_str->len));
             else if (v.type == V_LIST) PUSH(v_int(v.as_list->len));
-            else { fprintf(stderr,"Error: len() unsupported type\n"); longjmp(vm_err,1); }
+            else { perr("len-type\n"); longjmp(vm_err,1); }
             break;
         }
 
@@ -1390,7 +1402,7 @@ static void vm_exec(int start_pc) {
             Value b = POP();
             Value a = POP();
             if (a.type != V_INT || b.type != V_INT) {
-                fprintf(stderr,"Error: range() expects int\n"); longjmp(vm_err,1);
+                perr("range-int\n"); longjmp(vm_err,1);
             }
             PUSH(v_range_iter((int)a.as_int, (int)b.as_int, 1));
             break;
@@ -1407,9 +1419,19 @@ static void vm_exec(int start_pc) {
                 }
             } else if (container.type == V_STR) {
                 if (item.type != V_STR) { found = 0; }
-                else { found = strstr(container.as_str->s, item.as_str->s) != NULL; }
+                else {
+                int fl = container.as_str->len, sl = item.as_str->len;
+                found = 0;
+                for (int si = 0; si <= fl - sl; si++) {
+                    int match = 1;
+                    for (int sj = 0; sj < sl; sj++) {
+                        if (container.as_str->s[si+sj] != item.as_str->s[sj]) { match = 0; break; }
+                    }
+                    if (match) { found = 1; break; }
+                }
+            }
             } else {
-                fprintf(stderr,"Error: in not supported on this type\n"); longjmp(vm_err,1);
+                perr("in-type\n"); longjmp(vm_err,1);
             }
             PUSH(v_bool(found));
             break;
@@ -1422,7 +1444,7 @@ static void vm_exec(int start_pc) {
                 ListObj* lst = vp->as_list;
                 *vp = v_list_iter(lst);
             } else {
-                fprintf(stderr,"Error: not iterable\n"); longjmp(vm_err,1);
+                perr("not-iter\n"); longjmp(vm_err,1);
             }
             break;
         }
@@ -1450,7 +1472,7 @@ static void vm_exec(int start_pc) {
                     pc = end;
                 }
             } else {
-                fprintf(stderr,"Error: not iterable\n"); longjmp(vm_err,1);
+                perr("not-iter\n"); longjmp(vm_err,1);
             }
             break;
         }
@@ -1470,19 +1492,19 @@ static void vm_exec(int start_pc) {
         case OP_GET: {
             Value idx = POP();
             Value obj = POP();
-            if (idx.type!=V_INT) { fprintf(stderr,"Error: index must be int\n"); longjmp(vm_err,1); }
+            if (idx.type!=V_INT) { perr("idx-int\n"); longjmp(vm_err,1); }
             int i = (int)idx.as_int;
             if (obj.type==V_STR) {
                 if (i < 0) i += obj.as_str->len;
-                if (i<0||i>=obj.as_str->len) { fprintf(stderr,"Error: string index out of range\n"); longjmp(vm_err,1); }
+                if (i<0||i>=obj.as_str->len) { perr("str-idx\n"); longjmp(vm_err,1); }
                 char buf[2] = {obj.as_str->s[i], 0};
                 PUSH(v_str(str_intern(buf,1)));
             } else if (obj.type==V_LIST) {
                 if (i < 0) i += obj.as_list->len;
-                if (i<0||i>=obj.as_list->len) { fprintf(stderr,"Error: list index out of range\n"); longjmp(vm_err,1); }
+                if (i<0||i>=obj.as_list->len) { perr("lst-idx\n"); longjmp(vm_err,1); }
                 PUSH(obj.as_list->items[i]);
             } else {
-                fprintf(stderr,"Error: subscript on non-subscriptable\n"); longjmp(vm_err,1);
+                perr("bad-sub\n"); longjmp(vm_err,1);
             }
             break;
         }
@@ -1491,11 +1513,11 @@ static void vm_exec(int start_pc) {
             Value val = POP();
             Value idx = POP();
             Value lst = POP();
-            if (lst.type!=V_LIST) { fprintf(stderr,"Error: subscript on non-list\n"); longjmp(vm_err,1); }
-            if (idx.type!=V_INT) { fprintf(stderr,"Error: index must be int\n"); longjmp(vm_err,1); }
+            if (lst.type!=V_LIST) { perr("bad-sub\n"); longjmp(vm_err,1); }
+            if (idx.type!=V_INT) { perr("idx-int\n"); longjmp(vm_err,1); }
             int i = (int)idx.as_int;
             if (i < 0) i += lst.as_list->len;
-            if (i<0||i>=lst.as_list->len) { fprintf(stderr,"Error: list index out of range\n"); longjmp(vm_err,1); }
+            if (i<0||i>=lst.as_list->len) { perr("lst-idx\n"); longjmp(vm_err,1); }
             lst.as_list->items[i] = val;
             break;
         }
@@ -1503,7 +1525,7 @@ static void vm_exec(int start_pc) {
         case OP_APPEND: {
             Value val = POP();
             Value lst = POP();
-            if (lst.type!=V_LIST) { fprintf(stderr,"Error: append on non-list\n"); longjmp(vm_err,1); }
+            if (lst.type!=V_LIST) { perr("bad-app\n"); longjmp(vm_err,1); }
             list_ensure(lst.as_list, lst.as_list->len + 1);
             lst.as_list->items[lst.as_list->len++] = val;
             PUSH(lst);
@@ -1512,8 +1534,8 @@ static void vm_exec(int start_pc) {
 
         case OP_POP_LIST: {
             Value lst = POP();
-            if (lst.type!=V_LIST) { fprintf(stderr,"Error: pop on non-list\n"); longjmp(vm_err,1); }
-            if (lst.as_list->len == 0) { fprintf(stderr,"Error: pop from empty list\n"); longjmp(vm_err,1); }
+            if (lst.type!=V_LIST) { perr("Error: pop on non-list\n"); longjmp(vm_err,1); }
+            if (lst.as_list->len == 0) { perr("pop-empty\n"); longjmp(vm_err,1); }
             Value ret = lst.as_list->items[--lst.as_list->len];
             PUSH(ret);
             break;
@@ -1521,7 +1543,7 @@ static void vm_exec(int start_pc) {
 
         case OP_UPPER: {
             Value s = POP();
-            if (s.type != V_STR) { fprintf(stderr,"Error: expected string\n"); longjmp(vm_err,1); }
+            if (s.type != V_STR) { perr("need-str\n"); longjmp(vm_err,1); }
             int len = s.as_str->len;
             char* buf = (char*)alloca(len + 1);
             for (int i = 0; i < len; i++) {
@@ -1535,7 +1557,7 @@ static void vm_exec(int start_pc) {
 
         case OP_LOWER: {
             Value s = POP();
-            if (s.type != V_STR) { fprintf(stderr,"Error: expected string\n"); longjmp(vm_err,1); }
+            if (s.type != V_STR) { perr("need-str\n"); longjmp(vm_err,1); }
             int len = s.as_str->len;
             char* buf = (char*)alloca(len + 1);
             for (int i = 0; i < len; i++) {
@@ -1549,7 +1571,7 @@ static void vm_exec(int start_pc) {
 
         case OP_STRIP: {
             Value s = POP();
-            if (s.type != V_STR) { fprintf(stderr,"Error: expected string\n"); longjmp(vm_err,1); }
+            if (s.type != V_STR) { perr("need-str\n"); longjmp(vm_err,1); }
             int len = s.as_str->len;
             const char* data = s.as_str->s;
             int start = 0;
@@ -1563,7 +1585,7 @@ static void vm_exec(int start_pc) {
         case OP_EXPR_RESULT: {
             Value v = POP();
             print_val(v);
-            printf("\n");
+            newline();
             break;
         }
 
@@ -1575,12 +1597,12 @@ static void vm_exec(int start_pc) {
             if (callee.type == V_FUNC) {
                 FuncObj* f = callee.as_func;
                 /* Save frame */
-                if (frame_count >= FRAMES_MAX) { fprintf(stderr,"Error: call stack overflow\n"); longjmp(vm_err,1); }
+                if (frame_count >= FRAMES_MAX) { perr("stk-ovf\n"); longjmp(vm_err,1); }
                 int n = nargs < f->nparams ? nargs : f->nparams;
                 /* Save frame */
-                if (frame_count >= FRAMES_MAX) { fprintf(stderr,"Error: call stack overflow\n"); longjmp(vm_err,1); }
+                if (frame_count >= FRAMES_MAX) { perr("stk-ovf\n"); longjmp(vm_err,1); }
                 /* Save frame */
-                if (frame_count >= FRAMES_MAX) { fprintf(stderr,"Error: call stack overflow\n"); longjmp(vm_err,1); }
+                if (frame_count >= FRAMES_MAX) { perr("stk-ovf\n"); longjmp(vm_err,1); }
                 Frame* fr = &frames[frame_count++];
                 fr->pc = pc;
                 fr->sp = sp;         /* save BEFORE adjusting sp */
@@ -1610,14 +1632,14 @@ static void vm_exec(int start_pc) {
                 }
                 case 1: { /* range */
                     if (nargs == 1) {
-                        if (args[0].type != V_INT) { fprintf(stderr,"range() expects int\n"); longjmp(vm_err,1); }
+                        if (args[0].type != V_INT) { perr("range-int\n"); longjmp(vm_err,1); }
                         sp -= 2; /* pop arg and callee */
                         PUSH(v_range_iter(0,(int)args[0].as_int,1));
                     } else if (nargs == 2) {
-                        if (args[0].type!=V_INT||args[1].type!=V_INT) { fprintf(stderr,"range() expects int\n"); longjmp(vm_err,1); }
+                        if (args[0].type!=V_INT||args[1].type!=V_INT) { perr("range-int\n"); longjmp(vm_err,1); }
                         sp -= 3;
                         PUSH(v_range_iter((int)args[0].as_int,(int)args[1].as_int,1));
-                    } else { fprintf(stderr,"range() bad args\n"); longjmp(vm_err,1); }
+                    } else { perr("range-bad\n"); longjmp(vm_err,1); }
                     break;
                 }
                 default:
@@ -1626,7 +1648,7 @@ static void vm_exec(int start_pc) {
                     break;
                 }
             } else {
-                fprintf(stderr,"Error: calling non-function\n");
+                perr("not-fn\n");
                 longjmp(vm_err,1);
             }
             break;
@@ -1656,7 +1678,7 @@ static void vm_exec(int start_pc) {
             int nparams = RD8();
             int nloc = RD8();
             FuncObj* f = (FuncObj*)malloc(sizeof(FuncObj));
-            if (!f) { fprintf(stderr,"Out of memory\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+            if (!f) { perr("oom\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
             f->bc_start = body;
             f->nparams = nparams;
             f->nlocals = nloc;
@@ -1665,7 +1687,7 @@ static void vm_exec(int start_pc) {
         }
 
         default:
-            fprintf(stderr,"Error: unknown opcode %d at pc=%d\n",op,pc-1);
+            perr("bad-op "); perr_int(op); perr(" pc="); perr_int(pc-1); perr("\n");
             longjmp(vm_err,1);
         }
     }
@@ -1683,7 +1705,7 @@ static void run(const char* src, int sc_argc, char** sc_argv) {
 static void run_ext(const char* src, int keep_globals, int print_expr, int argc, char** argv) {
     /* Compile */
     uint8_t* bytecode = (uint8_t*)malloc(BYTECODE_MAX);
-    if (!bytecode) { fprintf(stderr,"Out of memory\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+    if (!bytecode) { perr("oom\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
 
     Compiler comp;
     comp_init(&comp, bytecode, BYTECODE_MAX, src);
@@ -1715,7 +1737,7 @@ static void run_ext(const char* src, int keep_globals, int print_expr, int argc,
     /* Initialize argv global */
     if (argv_slot >= 0 && argc > 0) {
         ListObj* lst = list_new();
-        if (!lst) { fprintf(stderr,"Out of memory\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (!lst) { perr("oom\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
         list_ensure(lst, argc);
         for (int i = 0; i < argc; i++) {
             lst->items[i] = v_str(str_intern(argv[i], (int)strlen(argv[i])));
@@ -1734,22 +1756,21 @@ static void run_ext(const char* src, int keep_globals, int print_expr, int argc,
  * Main
  * ================================================================ */
 static char* read_file(const char* path) {
-    FILE* f = fopen(path, "rb");
-    if (!f) { perror(path); return NULL; }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz >= SOURCE_MAX) { fprintf(stderr,"File too large\n"); fclose(f); return NULL; }
-    rewind(f);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perr("cant-open\n"); return NULL; }
+    long sz = lseek(fd, 0, SEEK_END);
+    if (sz >= SOURCE_MAX) { perr("big-file\n"); close(fd); return NULL; }
+    lseek(fd, 0, SEEK_SET);
     char* buf = (char*)malloc(sz+1);
-    if (!buf) { fprintf(stderr,"Out of memory\n"); fclose(f); return NULL; }
-    size_t n = fread(buf, 1, sz, f);
-    buf[n] = 0;
-    fclose(f);
+    if (!buf) { perr("oom\n"); close(fd); return NULL; }
+    int n = (int)read(fd, buf, sz);
+    buf[n > 0 ? n : 0] = 0;
+    close(fd);
     return buf;
 }
 
 static void repl(void) {
-    printf("pyte 0.1 (type 'exit()' to quit)\n");
+    pstr("pyte 0.1 (type 'exit()' to quit)"); newline();
     char inbuf[16384];
     int inpos = 0;
     int need_more = 0;
@@ -1757,15 +1778,21 @@ static void repl(void) {
     use_comp_jmp = 1;
 
     while (1) {
-        printf(need_more ? ".  ": "> ");
-        fflush(stdout);
+        pstr(need_more ? ".  " : "> ");
 
-        if (!fgets(inbuf + inpos, (int)(sizeof(inbuf) - inpos), stdin)) {
-            printf("\n");
-            break;
+        /* Read line using read() syscall */
+        int mpos = inpos;
+        int maxlen = (int)sizeof(inbuf) - inpos - 1;
+        while (mpos < maxlen + inpos) {
+            char ch;
+            int nr = (int)read(0, &ch, 1);
+            if (nr <= 0) { newline(); return; }
+            inbuf[mpos++] = ch;
+            if (ch == '\n') break;
         }
-        int len = (int)strlen(inbuf + inpos);
-        inpos += len;
+        inbuf[mpos] = 0;
+        int len = mpos - inpos;
+        inpos = mpos;
 
         /* Quick exit check — strip trailing newline first */
         if (inpos > 0 && inbuf[inpos-1] == '\n') inbuf[--inpos] = 0;
@@ -1820,7 +1847,7 @@ static void repl(void) {
             /* Compile and execute (keep globals across lines) */
             if (setjmp(comp_jmp)) {
                 /* Compilation or runtime error — print newline and continue */
-                fprintf(stderr, "\n");
+                perr("\n");
             } else {
                 run_ext(inbuf, 1, 1, 0, NULL);
             }
