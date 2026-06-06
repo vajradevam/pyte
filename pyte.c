@@ -12,11 +12,14 @@
  * ~40KB compiled (stripped).  One-pass compiler, no AST, no JIT.
  */
 
-#include <stdlib.h>
 #include <stdint.h>
 
 #include <unistd.h>
 #include <fcntl.h>
+
+#ifndef NULL
+#define NULL ((void*)0)
+#endif
 
 static int xstrlen(const char* s) { int n=0; while(s[n]) n++; return n; }
 static int xstrcmp(const char* a, const char* b) { while(*a&&*a==*b){a++;b++;} return *(unsigned char*)a-*(unsigned char*)b; }
@@ -1501,7 +1504,9 @@ static void vm_exec(int start_pc) {
             int body = RD16();
             int nparams = RD8();
             int nloc = RD8();
-            FuncObj* f = (FuncObj*)malloc(sizeof(FuncObj));
+            static FuncObj func_pool[FRAMES_MAX]; static int func_pool_n = 0;
+            if (func_pool_n >= FRAMES_MAX) { perr("fpool\n"); _exit(1); }
+            FuncObj* f = &func_pool[func_pool_n++];
             if (!f) { perr("oom\n"); _exit(1); }
             f->bc_start = body;
             f->nparams = nparams;
@@ -1527,8 +1532,8 @@ static void vm_exec(int start_pc) {
  * ================================================================ */
 static void run(const char* src) {
     /* Compile */
-    uint8_t* bytecode = (uint8_t*)malloc(BYTECODE_MAX);
-    if (!bytecode) { perr("oom\n"); _exit(1); }
+    static uint8_t bc_buf[BYTECODE_MAX];
+    uint8_t* bytecode = bc_buf;
 
     Compiler comp;
     comp_init(&comp, bytecode, BYTECODE_MAX, src);
@@ -1554,7 +1559,7 @@ static void run(const char* src) {
     /* Execute */
     vm_exec(0);
 
-    free(bytecode);
+
 }
 
 /* ================================================================
@@ -1566,12 +1571,12 @@ static char* read_file(const char* path) {
     long sz = lseek(fd, 0, SEEK_END);
     if (sz >= SOURCE_MAX) { perr("bigfile\n"); close(fd); return NULL; }
     lseek(fd, 0, SEEK_SET);
-    char* buf = (char*)malloc(sz+1);
-    if (!buf) { perr("oom\n"); close(fd); return NULL; }
-    int n = (int)read(fd, buf, sz);
-    buf[n > 0 ? n : 0] = 0;
+    static char src_buf[SOURCE_MAX];
+    if ((long)sizeof(src_buf) <= sz) { perr("bigfile\n"); close(fd); return NULL; }
+    int n = (int)read(fd, src_buf, sz);
+    src_buf[n > 0 ? n : 0] = 0;
     close(fd);
-    return buf;
+    return src_buf;
 }
 
 int main(int argc, char** argv) {
@@ -1593,6 +1598,6 @@ int main(int argc, char** argv) {
     }
 
     run(src);
-    free(buf);
+
     return 0;
 }
