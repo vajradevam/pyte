@@ -632,7 +632,6 @@ static void primary(Compiler* C) {
                         emit(C, OP_RANGE);
                     } else {
                         /* range(stop) = range(0, stop) */
-                        emit(C, OP_SWAP);
                         emit(C, OP_INT); emit64(C, 0);
                         emit(C, OP_SWAP);
                         emit(C, OP_RANGE);
