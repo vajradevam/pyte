@@ -12,7 +12,6 @@
  * ~40KB compiled (stripped).  One-pass compiler, no AST, no JIT.
  */
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -21,24 +20,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-/* Tiny output: write-based, no stdio formatting */
-static void pstr(const char* s) {
-    write(1, s, strlen(s));
-}
-
-static void perr(const char* s) {
-    write(2, s, strlen(s));
-}
-static void pint(long long n) {
-    char buf[32], *p = buf + sizeof(buf);
-    unsigned long long u;
-    if (n < 0) { u = 0ULL - (unsigned long long)n; } else { u = n; }
-    *--p = 0;
-    do { *--p = '0' + u % 10; u /= 10; } while (u);
-    if (n < 0) *--p = '-';
-    write(1, p, buf + sizeof(buf) - 1 - p);
-}
-
+static void pstr(const char* s) { write(1, s, strlen(s)); }
+static void perr(const char* s) { write(2, s, strlen(s)); }
 static void perr_int(long long n) {
     char buf[32], *p = buf + sizeof(buf);
     unsigned long long u;
@@ -49,10 +32,6 @@ static void perr_int(long long n) {
     write(2, p, buf + sizeof(buf) - 1 - p);
 }
 static void newline(void) { write(1, "\n", 1); }
-
-/* Error recovery for REPL */
-static jmp_buf comp_jmp;
-static int use_comp_jmp = 0;
 
 /* ================================================================
  * Configuration
@@ -73,14 +52,13 @@ static int use_comp_jmp = 0;
  * ================================================================ */
 typedef enum {
     V_NONE, V_BOOL, V_INT, V_FLOAT, V_STR, V_LIST,
-    V_FUNC, V_BUILTIN, V_RANGE_ITER, V_LIST_ITER
+    V_FUNC, V_BUILTIN, V_RANGE_ITER
 } VType;
 
 typedef struct Value Value;
 typedef struct ListObj  { int len, cap; Value* items; } ListObj;
 typedef struct FuncObj  { int bc_start, nparams, nlocals; } FuncObj;
 typedef struct RangeIter { int start, stop, step, cur; } RangeIter;
-typedef struct ListIter { ListObj* list; int index; } ListIter;
 typedef struct StrObj { int len; char s[]; } StrObj;
 
 struct Value {
@@ -94,7 +72,6 @@ struct Value {
         FuncObj*  as_func;
         int       as_builtin_id;
         RangeIter as_range;
-        ListIter  as_list_iter;
     };
 };
 
@@ -113,11 +90,6 @@ static Value v_range_iter(int a,int b,int s) {
     v.as_range.step=s; v.as_range.cur=a;
     return v;
 }
-static Value v_list_iter(ListObj* l) {
-    Value v; v.type = V_LIST_ITER;
-    v.as_list_iter.list = l; v.as_list_iter.index = 0;
-    return v;
-}
 
 static int is_truthy(Value v) {
     switch (v.type) {
@@ -127,7 +99,6 @@ static int is_truthy(Value v) {
     case V_FLOAT: return v.as_float != 0.0;
     case V_STR:   return v.as_str->len > 0;
     case V_LIST:  return v.as_list->len > 0;
-    case V_LIST_ITER: return 1;
     default:      return 1;
     }
 }
@@ -140,7 +111,7 @@ static int  str_arena_pos;
 
 static StrObj* str_alloc(int len) {
     int n = sizeof(StrObj) + len + 1;
-    if (str_arena_pos + n > STRING_POOL_MAX) { perr("str-pool\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+    if (str_arena_pos + n > STRING_POOL_MAX) { perr("pool\n"); exit(1); }
     StrObj* s = (StrObj*)(str_arena + str_arena_pos);
     str_arena_pos += n;
     s->len = len;
@@ -167,7 +138,7 @@ static char list_arena[LIST_ARENA_MAX];
 static int  list_arena_pos;
 
 static void* lalloc(int sz) {
-    if (list_arena_pos + sz > LIST_ARENA_MAX) { perr("lst-full\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+    if (list_arena_pos + sz > LIST_ARENA_MAX) { perr("lstfull\n"); exit(1); }
     void* p = list_arena + list_arena_pos;
     list_arena_pos += sz;
     return p;
@@ -248,7 +219,7 @@ static int lex_skip_ws(Lexer* L, int* at_line_start) {
     while (1) {
         int c = lex_peek(L);
         if (c == ' ') { lex_adv(L); if (*at_line_start) indent++; continue; }
-        if (c == '\t') { perr("tabs line "); perr_int(L->line); perr("\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (c == '\t') { perr("tabs ");perr_int(L->line);perr("\n"); exit(1); }
         if (c == '#') { while (lex_peek(L) && lex_peek(L) != '\n') lex_adv(L); continue; }
         if (c == '\n') {
             lex_adv(L);
@@ -291,7 +262,7 @@ static int lex_next(Lexer* L) {
             return T_DEDENT;
         }
         if (indent != L->indent_stack[L->indent_top]) {
-            perr("indent line "); perr_int(L->line); perr("\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
+            perr("indent ");perr_int(L->line);perr("\n"); exit(1);
         }
         L->prev_indent = indent;
         /* Same level: leading whitespace already consumed, continue to tokens */
@@ -328,10 +299,10 @@ static int lex_next(Lexer* L) {
             if (lex_peek(L) == '\\') { lex_adv(L); if (!lex_peek(L)) break; }
             lex_adv(L);
         }
-        if (!lex_peek(L)) { perr("unterm-str line "); perr_int(L->line); perr("\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (!lex_peek(L)) { perr("unterm ");perr_int(L->line);perr("\n"); exit(1); }
         int len = L->pos - start;
         char buf[1024];
-        if (len >= 1023) { perr("str-long\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (len >= 1023) { perr("strlong\n"); exit(1); }
         memcpy(buf, L->src + start, len); buf[len] = 0;
         lex_adv(L); /* skip closing quote */
         /* Simple unescape */
@@ -374,7 +345,7 @@ static int lex_next(Lexer* L) {
         int start = L->pos;
         while (((lex_peek(L)>='a'&&lex_peek(L)<='z')||(lex_peek(L)>='A'&&lex_peek(L)<='Z')||(lex_peek(L)>='0'&&lex_peek(L)<='9')||lex_peek(L)=='_') || lex_peek(L) == '_') lex_adv(L);
         int len = L->pos - start;
-        if (len >= IDENT_MAX-1) { perr("id-long\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (len >= IDENT_MAX-1) { perr("idlong\n"); exit(1); }
         memcpy(L->ident, L->src + start, len); L->ident[len] = 0;
 
         struct { const char* w; int t; } kw[] = {
@@ -417,8 +388,8 @@ static int lex_next(Lexer* L) {
     case ']': lex_adv(L); return T_RBRACKET;
     case '.': lex_adv(L); return T_DOT;
     }
-    perr("Error: unexpected char '"); { char _c = c; write(2, &_c, 1); } perr("'("); perr_int(c); perr(") at line "); perr_int(L->line); perr("\n");
-    if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
+    perr("badchar\n");
+    exit(1);
     return T_EOF;
 }
 
@@ -451,12 +422,7 @@ typedef enum {
     OP_RANGE,       /* build range from top of stack: stop or start,stop */
     OP_APPEND,      /* list.append(value) */
     OP_POP_LIST,    /* list.pop() */
-    OP_UPPER,       /* str.upper() */
-    OP_LOWER,       /* str.lower() */
-    OP_STRIP,       /* str.strip() */
     OP_IN,          /* x in list/string */
-    OP_ITER,        /* convert top to iterator */
-    OP_EXPR_RESULT, /* pop and print expression result */
 } Opcode;
 
 /* ================================================================
@@ -478,7 +444,6 @@ typedef struct {
     Lexer lex;
     int tok;
     int in_func; /* >0 when compiling function body */
-    int print_expr; /* if set, expression statements print their value */
     int line, col;
     LoopContext loops[64];
     int depth; /* current loop depth */
@@ -487,13 +452,12 @@ typedef struct {
 static void comp_init(Compiler* C, uint8_t* buf, int cap, const char* src) {
     C->bc = buf; C->bc_len = 0; C->bc_cap = cap;
     C->nglobals = 0; C->nlocals = 0; C->in_func = 0;
-    C->print_expr = 0;
     C->depth = 0;
     lex_init(&C->lex, src);
 }
 
 static void emit(Compiler* C, int b) {
-    if (C->bc_len >= C->bc_cap) { perr("bc-over\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+    if (C->bc_len >= C->bc_cap) { perr("bcfull\n"); exit(1); }
     C->bc[C->bc_len++] = b;
 }
 static void emit64(Compiler* C, int64_t v) {
@@ -517,8 +481,8 @@ static void next(Compiler* C) {
 }
 static void expect(Compiler* C, int t) {
     if (C->tok != t) {
-        perr("expect-tok "); perr_int(t); perr(" got "); perr_int(C->tok); perr(" at line "); perr_int(C->lex.line); perr("\n");
-        if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
+        perr("expect\n");
+        exit(1);
     }
     next(C);
 }
@@ -657,8 +621,8 @@ static void primary(Compiler* C) {
         break;
     }
     default:
-        perr("Error: unexpected token at line "); perr_int(C->lex.line); perr("\n");
-        if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
+        perr("badtok\n");
+        exit(1);
     }
 
     /* Postfix operations: subscript [...] */
@@ -707,7 +671,7 @@ static void expr_bp(Compiler* C, int minp) {
                 emit(C, OP_NOT);
                 continue;
             } else {
-                perr("not-in\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
+                perr("notin\n"); exit(1);
             }
         }
 
@@ -866,36 +830,31 @@ static void stmt(Compiler* C) {
     case T_KW_FOR: {
         /* for var in range(...): */
         next(C);
-        if (C->tok != T_IDENT) { perr("Error: expected identifier after 'for'\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (C->tok != T_IDENT) { perr("forid\n"); exit(1); }
         char vname[IDENT_MAX]; strcpy(vname, C->lex.ident);
         next(C);
         expect(C, T_KW_IN);
 
-        /* Handle range(...) and general iterables (lists, strings) */
-        if (C->tok == T_KW_RANGE) {
-            next(C); expect(C, T_LPAREN);
-            if (C->tok == T_RPAREN) {
-                emit(C, OP_INT); emit64(C, 0);
-                emit(C, OP_INT); emit64(C, 0);
+        /* Only range(...) is supported */
+        if (C->tok != T_KW_RANGE) { perr("norange\n"); exit(1); }
+        next(C); expect(C, T_LPAREN);
+        if (C->tok == T_RPAREN) {
+            emit(C, OP_INT); emit64(C, 0);
+            emit(C, OP_INT); emit64(C, 0);
+            emit(C, OP_RANGE);
+        } else {
+            expr(C);
+            if (C->tok == T_COMMA) {
+                next(C); expr(C);
                 emit(C, OP_RANGE);
             } else {
-                expr(C);
-                if (C->tok == T_COMMA) {
-                    next(C); expr(C);
-                    emit(C, OP_RANGE);
-                } else {
-                    /* range(stop) → push start=0 then stop, so OP_RANGE gets (0, stop) */
-                    emit(C, OP_INT); emit64(C, 0);
-                    emit(C, OP_SWAP);
-                    emit(C, OP_RANGE);
-                }
+                /* range(stop) → push start=0 then stop, so OP_RANGE gets (0, stop) */
+                emit(C, OP_INT); emit64(C, 0);
+                emit(C, OP_SWAP);
+                emit(C, OP_RANGE);
             }
-            expect(C, T_RPAREN);
-        } else {
-            /* General iterable: compile expression, then OP_ITER converts to iterator */
-            expr(C);
-            emit(C, OP_ITER);
         }
+        expect(C, T_RPAREN);
         expect(C, T_COLON);
 
         int loop_start = bcpos(C);
@@ -919,18 +878,17 @@ static void stmt(Compiler* C) {
 
         emit(C, OP_JUMP); emit16(C, loop_start);
         patch16(C, loop_start + 1); /* patch FORITER end offset */
+        emit(C, OP_POP); /* pop range iterator */
 
-        /* Patch all break jumps to execute the POP (clean up iterator) */
+        /* Patch all break jumps to exit here */
         for (int i = 0; i < C->loops[saved_depth2].n_break_patches; i++)
             patch16(C, C->loops[saved_depth2].break_patches[i]);
-
-        emit(C, OP_POP); /* pop iterator — executed by both normal exit and break */
         break;
     }
     case T_KW_DEF: {
         /* def name(params): body */
         next(C);
-        if (C->tok != T_IDENT) { perr("need-fn\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (C->tok != T_IDENT) { perr("fnname\n"); exit(1); }
         char fname[IDENT_MAX]; strcpy(fname, C->lex.ident);
         int slot = gslot(C, fname);
         next(C); expect(C, T_LPAREN);
@@ -940,7 +898,7 @@ static void stmt(Compiler* C) {
         int nparams = 0;
         if (C->tok != T_RPAREN) {
             while (1) {
-                if (C->tok != T_IDENT) { perr("need-param\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+                if (C->tok != T_IDENT) { perr("param\n"); exit(1); }
                 strcpy(params[nparams++], C->lex.ident);
                 next(C);
                 if (C->tok != T_COMMA) break;
@@ -993,7 +951,7 @@ static void stmt(Compiler* C) {
     }
     case T_KW_BREAK: {
         next(C);
-        if (C->depth == 0) { perr("break-out\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (C->depth == 0) { perr("brkout\n"); exit(1); }
         int p = bcpos(C);
         emit(C, OP_JUMP); emit16(C, 0);
         LoopContext* lc = &C->loops[C->depth - 1];
@@ -1002,7 +960,7 @@ static void stmt(Compiler* C) {
     }
     case T_KW_CONTINUE: {
         next(C);
-        if (C->depth == 0) { perr("cont-out\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+        if (C->depth == 0) { perr("contout\n"); exit(1); }
         emit(C, OP_JUMP); emit16(C, C->loops[C->depth - 1].continue_target);
         break;
     }
@@ -1067,74 +1025,21 @@ static void stmt(Compiler* C) {
                 else { s = gslot(C,name); emit(C, OP_GLOAD); emit(C,s); }
                 emit(C, OP_POP_LIST);
                 emit(C, OP_POP); /* discard return value in statement context */
-            } else if (strcmp(C->lex.ident,"upper")==0 || strcmp(C->lex.ident,"lower")==0) {
-                int is_upper = strcmp(C->lex.ident,"upper")==0;
-                next(C); expect(C, T_LPAREN); expect(C, T_RPAREN);
-                int s;
-                if (C->in_func && (s = find_local(C,name)) >= 0) { emit(C, OP_LOAD); emit(C,s); }
-                else { s = gslot(C,name); emit(C, OP_GLOAD); emit(C,s); }
-                emit(C, is_upper ? OP_UPPER : OP_LOWER);
-                if (C->in_func) { emit(C, OP_STORE); emit(C,s); }
-                else { emit(C, OP_GSTORE); emit(C,s); }
-            } else if (strcmp(C->lex.ident,"strip")==0) {
-                next(C); expect(C, T_LPAREN); expect(C, T_RPAREN);
-                int s;
-                if (C->in_func && (s = find_local(C,name)) >= 0) { emit(C, OP_LOAD); emit(C,s); }
-                else { s = gslot(C,name); emit(C, OP_GLOAD); emit(C,s); }
-                emit(C, OP_STRIP);
-                if (C->in_func) { emit(C, OP_STORE); emit(C,s); }
-                else { emit(C, OP_GSTORE); emit(C,s); }
             } else {
-                perr("Error: unknown method '"); perr(C->lex.ident); perr("'\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
+                perr("method\n"); exit(1);
             }
         } else {
-            /* Expression as statement - compile and discard/print */
-            /* The identifier is already 'consumed' from the peek, but not yet compiled.
-               Re-compile it by calling expr which will re-lex the name... 
-               Actually we need to un-consume or use the already-read name. */
-            /* We already consumed the identifier in 'name' above. We need to compile
-               a load of that identifier. */
-            if (C->in_func) { int s = find_local(C,name); if(s>=0){emit(C,OP_LOAD);emit(C,s);}else{s=gslot(C,name);emit(C,OP_GLOAD);emit(C,s);} }
-            else { int s = gslot(C,name); emit(C, OP_GLOAD); emit(C,s); }
-            if (C->print_expr) emit(C, OP_EXPR_RESULT);
-            else emit(C, OP_POP);
-            /* Expression must be followed by newline/EOF */
-            if (C->tok != T_NEWLINE && C->tok != T_DEDENT && C->tok != T_EOF) {
-                perr("newline line "); perr_int(C->lex.line); perr("\n");
-                if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
-            }
+            /* Expression as statement - discard */
+            
         }
         break;
     }
     case T_NEWLINE:
         next(C);
         break;
-    default: {
-        /* Expression as statement */
-        /* Try to parse an expression — if the current token can start one */
-        switch (C->tok) {
-        case T_INT: case T_FLOAT: case T_STR:
-        case T_KW_TRUE: case T_KW_FALSE: case T_KW_NONE:
-        case T_IDENT:
-        case T_KW_LEN: case T_KW_PRINT: case T_KW_RANGE:
-        case T_LPAREN: case T_LBRACKET:
-        case T_MINUS:
-        case T_KW_NOT:
-            expr(C);
-            if (C->print_expr) emit(C, OP_EXPR_RESULT);
-            else emit(C, OP_POP);
-            /* Expression must be followed by newline/EOF */
-            if (C->tok != T_NEWLINE && C->tok != T_DEDENT && C->tok != T_EOF) {
-                perr("newline line "); perr_int(C->lex.line); perr("\n");
-                if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
-            }
-            break;
-        default:
-            perr("bad-tok "); perr_int(C->tok); perr(" at line "); perr_int(C->lex.line); perr("\n");
-            if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1);
-        }
-        break;
-    }
+    default:
+        perr("badtok\n");
+        exit(1);
     }
 }
 
@@ -1160,45 +1065,36 @@ static int frame_count;
 
 static jmp_buf vm_err;
 
-
-static void pfloat_out(double f) {
-    char buf[64];
-    int pos = 0;
-    if (f < 0) { buf[pos++] = '-'; f = -f; }
-    if (f != f) { write(1, "nan", 3); return; }
-    if (f > 1e15) { write(1, "inf", 3); return; }
-    /* Integer part */
-    long long int_part = (long long)f;
-    double frac = f - (double)int_part;
-    /* Print integer part */
-    {
-        char ibuf[32], *p = ibuf + sizeof(ibuf);
-        unsigned long long u = int_part < 0 ? 0ULL - (unsigned long long)int_part : (unsigned long long)int_part;
-        *--p = 0;
-        do { *--p = '0' + u % 10; u /= 10; } while (u);
-        while (*p) buf[pos++] = *p++;
-    }
-    if (frac != 0.0) {
-        buf[pos++] = '.';
-        for (int i = 0; i < 10; i++) {
-            frac *= 10;
-            int d = (int)frac;
-            buf[pos++] = '0' + d;
-            frac -= d;
-            if (frac == 0.0) break;
-        }
-        /* Trim trailing zeros */
-        while (pos > 1 && buf[pos-1] == '0') pos--;
-    }
-    write(1, buf, pos);
-}
-
 static void print_val(Value v) {
     switch (v.type) {
     case V_NONE:  pstr("None"); break;
     case V_BOOL:  pstr(v.as_bool ? "True" : "False"); break;
-    case V_INT:   pint(v.as_int); break;
-    case V_FLOAT: pfloat_out(v.as_float); break;
+    case V_INT:   { char b[32],*p=b+32;unsigned long long u=v.as_int<0?0ULL-(unsigned long long)v.as_int:(unsigned long long)v.as_int;*--p=0;do{*--p='0'+u%10;u/=10;}while(u);if(v.as_int<0)*--p='-';write(1,p,b+31-p);} break;
+    case V_FLOAT: {
+        double f = v.as_float;
+        char b[64], *p = b;
+        if (f < 0) { *p++ = '-'; f = -f; }
+        if (f != f) { pstr("nan"); break; }
+        if (f > 1e15) { pstr("inf"); break; }
+        long long ip = (long long)f;
+        double fp = f - (double)ip;
+        /* Print integer part */
+        char ibuf[32], *ip2 = ibuf + sizeof(ibuf);
+        { unsigned long long u = ip < 0 ? 0ULL - (unsigned long long)ip : (unsigned long long)ip;
+          *--ip2 = 0; do { *--ip2 = '0' + u % 10; u /= 10; } while (u);
+          while (*ip2) *p++ = *ip2++; }
+        if (fp != 0.0) {
+            *p++ = '.';
+            for (int i = 0; i < 10; i++) {
+                fp *= 10; int d = (int)fp;
+                *p++ = '0' + d; fp -= d;
+                if (fp == 0.0) break;
+            }
+            while (p > b+1 && p[-1] == '0') p--;
+        }
+        write(1, b, p - b);
+        break;
+    }
     case V_STR:   pstr(v.as_str->s); break;
     case V_LIST: {
         pstr("[");
@@ -1210,9 +1106,8 @@ static void print_val(Value v) {
         break;
     }
     case V_FUNC:  pstr("<function>"); break;
-    case V_BUILTIN: pstr("<builtin "); pint(v.as_builtin_id); pstr(">"); break;
+    case V_BUILTIN: pstr("<builtin ");{char b[32],*p=b+32;unsigned long long u=v.as_builtin_id;*--p=0;do{*--p='0'+u%10;u/=10;}while(u);write(1,p,b+31-p);}pstr(">"); break;
     case V_RANGE_ITER: pstr("<range>"); break;
-    case V_LIST_ITER: pstr("<list_iter>"); break;
     }
 }
 
@@ -1228,12 +1123,12 @@ static Value add_val(Value a, Value b) {
     if (a.type==V_FLOAT && b.type==V_INT) return v_float(a.as_float+b.as_int);
     if (a.type==V_STR && b.type==V_STR) {
         int l = a.as_str->len + b.as_str->len;
-        char buf[4096]; if (l>=4095) { perr("str-long\n"); longjmp(vm_err,1); }
+        char buf[4096]; if (l>=4095) { perr("strlong\n"); longjmp(vm_err,1); }
         memcpy(buf,a.as_str->s,a.as_str->len);
         memcpy(buf+a.as_str->len,b.as_str->s,b.as_str->len);
         return v_str(str_intern(buf,l));
     }
-    perr("bad-+\n"); longjmp(vm_err,1);
+    perr("bad+\n"); longjmp(vm_err,1);
     return v_none();
 }
 static Value sub_val(Value a, Value b) {
@@ -1241,7 +1136,7 @@ static Value sub_val(Value a, Value b) {
     if (a.type==V_FLOAT && b.type==V_FLOAT) return v_float(a.as_float-b.as_float);
     if (a.type==V_INT && b.type==V_FLOAT) return v_float(a.as_int-b.as_float);
     if (a.type==V_FLOAT && b.type==V_INT) return v_float(a.as_float-b.as_int);
-    perr("bad--\n"); longjmp(vm_err,1);
+    perr("bad-\n"); longjmp(vm_err,1);
     return v_none();
 }
 static Value mul_val(Value a, Value b) {
@@ -1249,7 +1144,7 @@ static Value mul_val(Value a, Value b) {
     if (a.type==V_FLOAT && b.type==V_FLOAT) return v_float(a.as_float*b.as_float);
     if (a.type==V_INT && b.type==V_FLOAT) return v_float(a.as_int*b.as_float);
     if (a.type==V_FLOAT && b.type==V_INT) return v_float(a.as_float*b.as_int);
-    perr("bad-*\n"); longjmp(vm_err,1);
+    perr("bad*\n"); longjmp(vm_err,1);
     return v_none();
 }
 static Value div_val(Value a, Value b) {
@@ -1269,7 +1164,7 @@ static Value div_val(Value a, Value b) {
         if (b.as_int==0) { perr("div0\n"); longjmp(vm_err,1); }
         return v_float((double)((int)(a.as_float/b.as_int)));
     }
-    perr("bad-//\n"); longjmp(vm_err,1);
+    perr("bad//\n"); longjmp(vm_err,1);
     return v_none();
 }
 static Value mod_val(Value a, Value b) {
@@ -1277,13 +1172,13 @@ static Value mod_val(Value a, Value b) {
         if (b.as_int==0) { perr("mod0\n"); longjmp(vm_err,1); }
         return v_int(a.as_int%b.as_int);
     }
-    perr("bad-%\n"); longjmp(vm_err,1);
+    perr("bad%%\n"); longjmp(vm_err,1);
     return v_none();
 }
 static Value neg_val(Value a) {
     if (a.type==V_INT) return v_int(-a.as_int);
     if (a.type==V_FLOAT) return v_float(-a.as_float);
-    perr("bad-neg\n"); longjmp(vm_err,1);
+    perr("badneg\n"); longjmp(vm_err,1);
     return v_none();
 }
 static Value cmp_val(int op, Value a, Value b) {
@@ -1316,7 +1211,7 @@ static Value cmp_val(int op, Value a, Value b) {
         switch(op){case OP_EQ:r=0;break;case OP_NE:r=1;break;default:goto unsup_cmp;}
     } else {
         unsup_cmp:
-        perr("bad-cmp\n"); longjmp(vm_err,1);
+        perr("badcmp\n"); longjmp(vm_err,1);
     }
     return v_bool(r);
 }
@@ -1394,7 +1289,7 @@ static void vm_exec(int start_pc) {
             Value v = POP();
             if (v.type == V_STR) PUSH(v_int(v.as_str->len));
             else if (v.type == V_LIST) PUSH(v_int(v.as_list->len));
-            else { perr("len-type\n"); longjmp(vm_err,1); }
+            else { perr("lentype\n"); longjmp(vm_err,1); }
             break;
         }
 
@@ -1402,7 +1297,7 @@ static void vm_exec(int start_pc) {
             Value b = POP();
             Value a = POP();
             if (a.type != V_INT || b.type != V_INT) {
-                perr("range-int\n"); longjmp(vm_err,1);
+                perr("rangeint\n"); longjmp(vm_err,1);
             }
             PUSH(v_range_iter((int)a.as_int, (int)b.as_int, 1));
             break;
@@ -1419,60 +1314,27 @@ static void vm_exec(int start_pc) {
                 }
             } else if (container.type == V_STR) {
                 if (item.type != V_STR) { found = 0; }
-                else {
-                int fl = container.as_str->len, sl = item.as_str->len;
-                found = 0;
-                for (int si = 0; si <= fl - sl; si++) {
-                    int match = 1;
-                    for (int sj = 0; sj < sl; sj++) {
-                        if (container.as_str->s[si+sj] != item.as_str->s[sj]) { match = 0; break; }
-                    }
-                    if (match) { found = 1; break; }
-                }
-            }
+                else { {int fl=container.as_str->len,sl=item.as_str->len;found=0;for(int si=0;si<=fl-sl;si++){int m=1;for(int sj=0;sj<sl;sj++){if(container.as_str->s[si+sj]!=item.as_str->s[sj]){m=0;break;}}if(m){found=1;break;}}} }
             } else {
-                perr("in-type\n"); longjmp(vm_err,1);
+                perr("intype\n"); longjmp(vm_err,1);
             }
             PUSH(v_bool(found));
             break;
         }
 
-        case OP_ITER: {
-            /* Convert top-of-stack to an iterator */
-            Value* vp = &TOP();
-            if (vp->type == V_LIST) {
-                ListObj* lst = vp->as_list;
-                *vp = v_list_iter(lst);
-            } else {
-                perr("not-iter\n"); longjmp(vm_err,1);
-            }
-            break;
-        }
-
         case OP_FORITER: {
             int end = RD16();
-            /* Get the iterator from the stack, update it in place */
+            /* Get the range iterator from the stack, update it in place */
             Value* itp = &TOP();
-            if (itp->type == V_RANGE_ITER) {
-                if (itp->as_range.step > 0 && itp->as_range.cur < itp->as_range.stop) {
-                    PUSH(v_int(itp->as_range.cur));
-                    itp->as_range.cur += itp->as_range.step;
-                } else if (itp->as_range.step < 0 && itp->as_range.cur > itp->as_range.stop) {
-                    PUSH(v_int(itp->as_range.cur));
-                    itp->as_range.cur += itp->as_range.step;
-                } else {
-                    pc = end;
-                }
-            } else if (itp->type == V_LIST_ITER) {
-                ListIter* li = &itp->as_list_iter;
-                if (li->index < li->list->len) {
-                    PUSH(li->list->items[li->index]);
-                    li->index++;
-                } else {
-                    pc = end;
-                }
+            if (itp->type != V_RANGE_ITER) { perr("noiter\n"); longjmp(vm_err,1); }
+            if (itp->as_range.step > 0 && itp->as_range.cur < itp->as_range.stop) {
+                PUSH(v_int(itp->as_range.cur));
+                itp->as_range.cur += itp->as_range.step;
+            } else if (itp->as_range.step < 0 && itp->as_range.cur > itp->as_range.stop) {
+                PUSH(v_int(itp->as_range.cur));
+                itp->as_range.cur += itp->as_range.step;
             } else {
-                perr("not-iter\n"); longjmp(vm_err,1);
+                pc = end;
             }
             break;
         }
@@ -1492,19 +1354,19 @@ static void vm_exec(int start_pc) {
         case OP_GET: {
             Value idx = POP();
             Value obj = POP();
-            if (idx.type!=V_INT) { perr("idx-int\n"); longjmp(vm_err,1); }
+            if (idx.type!=V_INT) { perr("idxint\n"); longjmp(vm_err,1); }
             int i = (int)idx.as_int;
             if (obj.type==V_STR) {
                 if (i < 0) i += obj.as_str->len;
-                if (i<0||i>=obj.as_str->len) { perr("str-idx\n"); longjmp(vm_err,1); }
+                if (i<0||i>=obj.as_str->len) { perr("stridx\n"); longjmp(vm_err,1); }
                 char buf[2] = {obj.as_str->s[i], 0};
                 PUSH(v_str(str_intern(buf,1)));
             } else if (obj.type==V_LIST) {
                 if (i < 0) i += obj.as_list->len;
-                if (i<0||i>=obj.as_list->len) { perr("lst-idx\n"); longjmp(vm_err,1); }
+                if (i<0||i>=obj.as_list->len) { perr("lstidx\n"); longjmp(vm_err,1); }
                 PUSH(obj.as_list->items[i]);
             } else {
-                perr("bad-sub\n"); longjmp(vm_err,1);
+                perr("nosub\n"); longjmp(vm_err,1);
             }
             break;
         }
@@ -1513,19 +1375,20 @@ static void vm_exec(int start_pc) {
             Value val = POP();
             Value idx = POP();
             Value lst = POP();
-            if (lst.type!=V_LIST) { perr("bad-sub\n"); longjmp(vm_err,1); }
-            if (idx.type!=V_INT) { perr("idx-int\n"); longjmp(vm_err,1); }
+            if (lst.type!=V_LIST) { perr("nosubl\n"); longjmp(vm_err,1); }
+            if (idx.type!=V_INT) { perr("idxint\n"); longjmp(vm_err,1); }
             int i = (int)idx.as_int;
             if (i < 0) i += lst.as_list->len;
-            if (i<0||i>=lst.as_list->len) { perr("lst-idx\n"); longjmp(vm_err,1); }
+            if (i<0||i>=lst.as_list->len) { perr("lstidx\n"); longjmp(vm_err,1); }
             lst.as_list->items[i] = val;
+            PUSH(val);
             break;
         }
 
         case OP_APPEND: {
             Value val = POP();
             Value lst = POP();
-            if (lst.type!=V_LIST) { perr("bad-app\n"); longjmp(vm_err,1); }
+            if (lst.type!=V_LIST) { perr("noapp\n"); longjmp(vm_err,1); }
             list_ensure(lst.as_list, lst.as_list->len + 1);
             lst.as_list->items[lst.as_list->len++] = val;
             PUSH(lst);
@@ -1534,58 +1397,10 @@ static void vm_exec(int start_pc) {
 
         case OP_POP_LIST: {
             Value lst = POP();
-            if (lst.type!=V_LIST) { perr("Error: pop on non-list\n"); longjmp(vm_err,1); }
-            if (lst.as_list->len == 0) { perr("pop-empty\n"); longjmp(vm_err,1); }
+            if (lst.type!=V_LIST) { perr("nopop\n"); longjmp(vm_err,1); }
+            if (lst.as_list->len == 0) { perr("popemp\n"); longjmp(vm_err,1); }
             Value ret = lst.as_list->items[--lst.as_list->len];
             PUSH(ret);
-            break;
-        }
-
-        case OP_UPPER: {
-            Value s = POP();
-            if (s.type != V_STR) { perr("need-str\n"); longjmp(vm_err,1); }
-            int len = s.as_str->len;
-            char* buf = (char*)alloca(len + 1);
-            for (int i = 0; i < len; i++) {
-                char c = s.as_str->s[i];
-                buf[i] = (c >= 'a' && c <= 'z') ? c - 32 : c;
-            }
-            buf[len] = 0;
-            PUSH(v_str(str_intern(buf, len)));
-            break;
-        }
-
-        case OP_LOWER: {
-            Value s = POP();
-            if (s.type != V_STR) { perr("need-str\n"); longjmp(vm_err,1); }
-            int len = s.as_str->len;
-            char* buf = (char*)alloca(len + 1);
-            for (int i = 0; i < len; i++) {
-                char c = s.as_str->s[i];
-                buf[i] = (c >= 'A' && c <= 'Z') ? c + 32 : c;
-            }
-            buf[len] = 0;
-            PUSH(v_str(str_intern(buf, len)));
-            break;
-        }
-
-        case OP_STRIP: {
-            Value s = POP();
-            if (s.type != V_STR) { perr("need-str\n"); longjmp(vm_err,1); }
-            int len = s.as_str->len;
-            const char* data = s.as_str->s;
-            int start = 0;
-            while (start < len && (data[start] == ' ' || data[start] == '\t' || data[start] == '\n' || data[start] == '\r')) start++;
-            int end = len;
-            while (end > start && (data[end-1] == ' ' || data[end-1] == '\t' || data[end-1] == '\n' || data[end-1] == '\r')) end--;
-            PUSH(v_str(str_intern(data + start, end - start)));
-            break;
-        }
-
-        case OP_EXPR_RESULT: {
-            Value v = POP();
-            print_val(v);
-            newline();
             break;
         }
 
@@ -1597,12 +1412,12 @@ static void vm_exec(int start_pc) {
             if (callee.type == V_FUNC) {
                 FuncObj* f = callee.as_func;
                 /* Save frame */
-                if (frame_count >= FRAMES_MAX) { perr("stk-ovf\n"); longjmp(vm_err,1); }
+                if (frame_count >= FRAMES_MAX) { perr("stkovf\n"); longjmp(vm_err,1); }
                 int n = nargs < f->nparams ? nargs : f->nparams;
                 /* Save frame */
-                if (frame_count >= FRAMES_MAX) { perr("stk-ovf\n"); longjmp(vm_err,1); }
+                if (frame_count >= FRAMES_MAX) { perr("stkovf\n"); longjmp(vm_err,1); }
                 /* Save frame */
-                if (frame_count >= FRAMES_MAX) { perr("stk-ovf\n"); longjmp(vm_err,1); }
+                if (frame_count >= FRAMES_MAX) { perr("stkovf\n"); longjmp(vm_err,1); }
                 Frame* fr = &frames[frame_count++];
                 fr->pc = pc;
                 fr->sp = sp;         /* save BEFORE adjusting sp */
@@ -1632,14 +1447,14 @@ static void vm_exec(int start_pc) {
                 }
                 case 1: { /* range */
                     if (nargs == 1) {
-                        if (args[0].type != V_INT) { perr("range-int\n"); longjmp(vm_err,1); }
+                        if (args[0].type != V_INT) { perr("rangeint\n"); longjmp(vm_err,1); }
                         sp -= 2; /* pop arg and callee */
                         PUSH(v_range_iter(0,(int)args[0].as_int,1));
                     } else if (nargs == 2) {
-                        if (args[0].type!=V_INT||args[1].type!=V_INT) { perr("range-int\n"); longjmp(vm_err,1); }
+                        if (args[0].type!=V_INT||args[1].type!=V_INT) { perr("rangeint\n"); longjmp(vm_err,1); }
                         sp -= 3;
                         PUSH(v_range_iter((int)args[0].as_int,(int)args[1].as_int,1));
-                    } else { perr("range-bad\n"); longjmp(vm_err,1); }
+                    } else { perr("rangebad\n"); longjmp(vm_err,1); }
                     break;
                 }
                 default:
@@ -1648,7 +1463,7 @@ static void vm_exec(int start_pc) {
                     break;
                 }
             } else {
-                perr("not-fn\n");
+                perr("nofn\n");
                 longjmp(vm_err,1);
             }
             break;
@@ -1678,7 +1493,7 @@ static void vm_exec(int start_pc) {
             int nparams = RD8();
             int nloc = RD8();
             FuncObj* f = (FuncObj*)malloc(sizeof(FuncObj));
-            if (!f) { perr("oom\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+            if (!f) { perr("oom\n"); exit(1); }
             f->bc_start = body;
             f->nparams = nparams;
             f->nlocals = nloc;
@@ -1687,7 +1502,7 @@ static void vm_exec(int start_pc) {
         }
 
         default:
-            perr("bad-op "); perr_int(op); perr(" pc="); perr_int(pc-1); perr("\n");
+            perr("badop\n");
             longjmp(vm_err,1);
         }
     }
@@ -1696,27 +1511,13 @@ static void vm_exec(int start_pc) {
 /* ================================================================
  * Top-level execution
  * ================================================================ */
-static void run_ext(const char* src, int keep_globals, int print_expr, int argc, char** argv);
-
-static void run(const char* src, int sc_argc, char** sc_argv) {
-    run_ext(src, 0, 0, sc_argc, sc_argv);
-}
-
-static void run_ext(const char* src, int keep_globals, int print_expr, int argc, char** argv) {
+static void run(const char* src) {
     /* Compile */
     uint8_t* bytecode = (uint8_t*)malloc(BYTECODE_MAX);
-    if (!bytecode) { perr("oom\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
+    if (!bytecode) { perr("oom\n"); exit(1); }
 
     Compiler comp;
     comp_init(&comp, bytecode, BYTECODE_MAX, src);
-    comp.print_expr = print_expr;
-
-    /* Pre-register 'argv' global if we have args */
-    int argv_slot = -1;
-    if (argc > 0) {
-        argv_slot = gslot(&comp, "argv");
-    }
-
     next(&comp);
 
     /* Compile top-level statements */
@@ -1731,20 +1532,10 @@ static void run_ext(const char* src, int keep_globals, int print_expr, int argc,
     bc = bytecode;
     bc_len = comp.bc_len;
     sp = stack;
-    if (!keep_globals) memset(globals, 0, sizeof(globals));
+    memset(globals, 0, sizeof(globals));
     frame_count = 0;
 
-    /* Initialize argv global */
-    if (argv_slot >= 0 && argc > 0) {
-        ListObj* lst = list_new();
-        if (!lst) { perr("oom\n"); if(use_comp_jmp)longjmp(comp_jmp,1);else exit(1); }
-        list_ensure(lst, argc);
-        for (int i = 0; i < argc; i++) {
-            lst->items[i] = v_str(str_intern(argv[i], (int)strlen(argv[i])));
-        }
-        lst->len = argc;
-        globals[argv_slot] = v_list(lst);
-    }
+    /* execute */
 
     /* Execute */
     vm_exec(0);
@@ -1757,9 +1548,9 @@ static void run_ext(const char* src, int keep_globals, int print_expr, int argc,
  * ================================================================ */
 static char* read_file(const char* path) {
     int fd = open(path, O_RDONLY);
-    if (fd < 0) { perr("cant-open\n"); return NULL; }
+    if (fd < 0) { perr("noopen\n"); return NULL; }
     long sz = lseek(fd, 0, SEEK_END);
-    if (sz >= SOURCE_MAX) { perr("big-file\n"); close(fd); return NULL; }
+    if (sz >= SOURCE_MAX) { perr("bigfile\n"); close(fd); return NULL; }
     lseek(fd, 0, SEEK_SET);
     char* buf = (char*)malloc(sz+1);
     if (!buf) { perr("oom\n"); close(fd); return NULL; }
@@ -1769,123 +1560,25 @@ static char* read_file(const char* path) {
     return buf;
 }
 
-static void repl(void) {
-    pstr("pyte 0.1 (type 'exit()' to quit)"); newline();
-    char inbuf[16384];
-    int inpos = 0;
-    int need_more = 0;
-
-    use_comp_jmp = 1;
-
-    while (1) {
-        pstr(need_more ? ".  " : "> ");
-
-        /* Read line using read() syscall */
-        int mpos = inpos;
-        int maxlen = (int)sizeof(inbuf) - inpos - 1;
-        while (mpos < maxlen + inpos) {
-            char ch;
-            int nr = (int)read(0, &ch, 1);
-            if (nr <= 0) { newline(); return; }
-            inbuf[mpos++] = ch;
-            if (ch == '\n') break;
-        }
-        inbuf[mpos] = 0;
-        int len = mpos - inpos;
-        inpos = mpos;
-
-        /* Quick exit check — strip trailing newline first */
-        if (inpos > 0 && inbuf[inpos-1] == '\n') inbuf[--inpos] = 0;
-        if (strcmp(inbuf, "exit()") == 0) break;
-        /* Put newline back for compilation */
-        if (inbuf[inpos] == 0 && inpos < (int)sizeof(inbuf)-1) {
-            inbuf[inpos++] = '\n';
-            inbuf[inpos] = 0;
-        }
-
-        /* Count leading whitespace on the last line to track indentation */
-        int last_start = inpos - len;
-        if (last_start < 0) last_start = 0;
-        int indent = 0;
-        for (int i = last_start; i < inpos && inbuf[i] == ' '; i++) indent++;
-
-        /* Check if last meaningful line ends with ':' (block start) */
-        int ends_with_colon = 0;
-        for (int i = last_start; i < inpos; i++) {
-            if (inbuf[i] == ':') {
-                int j = i + 1;
-                while (j < inpos && (inbuf[j] == ' ' || inbuf[j] == '\t')) j++;
-                if (j >= inpos || inbuf[j] == '\n' || inbuf[j] == 0) {
-                    ends_with_colon = 1;
-                    break;
-                }
-            }
-        }
-
-        if (ends_with_colon) {
-            need_more = 1;
-            continue;
-        }
-
-        /* If we needed more and got a blank line, end the block */
-        if (need_more && indent == 0 && len <= 1) {
-            need_more = 0;
-        }
-
-        /* If we needed more and got a non-indented line, execute pending block */
-        if (need_more && indent == 0 && len > 1) {
-            need_more = 0;
-        }
-
-        if (!need_more) {
-            /* Strip trailing newline for compilation */
-            while (inpos > 0 && (inbuf[inpos-1] == '\n' || inbuf[inpos-1] == '\r')) inpos--;
-            inbuf[inpos] = 0;
-
-            if (inpos == 0) continue;
-
-            /* Compile and execute (keep globals across lines) */
-            if (setjmp(comp_jmp)) {
-                /* Compilation or runtime error — print newline and continue */
-                perr("\n");
-            } else {
-                run_ext(inbuf, 1, 1, 0, NULL);
-            }
-
-            inpos = 0;
-            inbuf[0] = 0;
-        }
-    }
-}
-
 int main(int argc, char** argv) {
     if (argc < 2) {
-        repl();
-        return 0;
+        perr("Usage: "); perr(argv[0]); perr(" file.py\n");
+        perr("       "); perr(argv[0]); perr(" -e code\n");
+        return 1;
     }
 
     const char* src;
     char* buf = NULL;
-    int sc_argc = 0;
-    char** sc_argv = NULL;
 
-    if (argc >= 3 && strcmp(argv[1], "-e") == 0) {
+    if (argc == 3 && strcmp(argv[1], "-e") == 0) {
         src = argv[2];
-        if (argc > 3) {
-            sc_argc = argc - 3;
-            sc_argv = argv + 3;
-        }
     } else {
         buf = read_file(argv[1]);
         if (!buf) return 1;
         src = buf;
-        if (argc > 2) {
-            sc_argc = argc - 2;
-            sc_argv = argv + 2;
-        }
     }
 
-    run(src, sc_argc, sc_argv);
+    run(src);
     free(buf);
     return 0;
 }
