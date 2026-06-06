@@ -14,12 +14,39 @@
 
 #include <stdint.h>
 
-#include <unistd.h>
-#include <fcntl.h>
+/* Minimal syscall wrappers (no libc) */
+#define SYS_read 0
+#define SYS_write 1
+#define SYS_open 2
+#define SYS_close 3
+#define SYS_lseek 8
+#define SYS_exit 60
 
+static long syscall3(long n, long a1, long a2, long a3) {
+    long ret;
+    __asm__ volatile("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2), "d"(a3) : "rcx", "r11", "memory");
+    return ret;
+}
+static long syscall2(long n, long a1, long a2) { return syscall3(n, a1, a2, 0); }
+static long syscall1(long n, long a1) { return syscall3(n, a1, 0, 0); }
+
+static void _exit(int s) { syscall1(SYS_exit, s); for(;;); }
+static long write(int f, const void* b, long n) { return syscall3(SYS_write, f, (long)b, n); }
+static long read(int f, void* b, long n) { return syscall3(SYS_read, f, (long)b, n); }
+static long open(const char* p, int fl) { return syscall2(SYS_open, (long)p, fl); }
+static long close(int f) { return syscall1(SYS_close, f); }
+static long lseek(int f, long o, int w) { return syscall3(SYS_lseek, f, o, w); }
+
+#define O_RDONLY 0
+#define SEEK_SET 0
+#define SEEK_END 2
+#define SEEK_CUR 1
 #ifndef NULL
 #define NULL ((void*)0)
 #endif
+typedef unsigned long size_t;
+typedef long ssize_t;
+
 
 static int xstrlen(const char* s) { int n=0; while(s[n]) n++; return n; }
 static int xstrcmp(const char* a, const char* b) { while(*a&&*a==*b){a++;b++;} return *(unsigned char*)a-*(unsigned char*)b; }
@@ -32,8 +59,8 @@ static void xmemset(void* d, int c, int n) { unsigned char* a=d; while(n--) *a++
 
 
 
-static void pstr(const char* s) { int n=0; while(s[n]) n++; write(1,s,n); }
-static void perr(const char* s) { int n=0; while(s[n]) n++; write(2,s,n); }
+static void pstr(const char* s) { int n=0; for(;s[n];n++); write(1,s,n); }
+static void perr(const char* s) { int n=0; for(;s[n];n++); write(2,s,n); }
 static void perr_int(long long n) {
     char buf[32], *p = buf + sizeof(buf);
     unsigned long long u;
@@ -1577,6 +1604,21 @@ static char* read_file(const char* path) {
     src_buf[n > 0 ? n : 0] = 0;
     close(fd);
     return src_buf;
+}
+
+int main(int argc, char** argv);
+__attribute__((naked, weak)) void _start(void) {
+    __asm__(
+        "movq (%%rsp), %%rdi\n"
+        "leaq 8(%%rsp), %%rsi\n"
+        "call main\n"
+        "mov %%rax, %%rdi\n"
+        "mov $60, %%rax\n"
+        "syscall\n"
+        :
+        :
+        : "rdi", "rsi", "rax", "rcx", "r11", "memory"
+    );
 }
 
 int main(int argc, char** argv) {
